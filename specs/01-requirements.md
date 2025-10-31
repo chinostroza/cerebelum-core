@@ -21,27 +21,57 @@ Cerebelum Core is the foundational workflow orchestration engine. It provides de
 
 ## Requirements
 
-### Requirement 1: Workflow Definition and Management
+### Requirement 1: Code-First Workflow Definition
 
-**User Story:** As a developer, I want to define workflows using a JSON/map-based DSL so that I can create complex execution flows without learning a new language.
+**User Story:** As a developer, I want to define workflows using pure Elixir code so that I get compile-time validation, type safety, IDE support, and trivial testing.
 
 #### Acceptance Criteria
 
-1. WHEN developer provides workflow definition THEN system SHALL validate structure and node types
-2. IF workflow definition is invalid THEN system SHALL return specific validation errors with field locations
-3. WHILE workflow is being defined THEN system SHALL support nodes of types: function, map, conditional, parallel, sequential, delay
-4. WHERE workflow contains conditional branches THEN system SHALL evaluate edge conditions and route accordingly
-5. WHEN workflow is created THEN system SHALL assign unique workflow ID and version number
-6. IF workflow references non-existent modules or functions THEN system SHALL fail validation with clear error message
-7. WHILE workflow execution is in progress THEN system SHALL prevent workflow definition modifications
-8. WHERE workflow has circular dependencies THEN system SHALL detect and reject during validation
+1. WHEN developer creates workflow module THEN system SHALL provide `use Cerebelum.Workflow` macro for DSL
+2. IF workflow references non-existent function THEN Elixir compiler SHALL fail with compile-time error
+3. WHILE workflow is being defined THEN system SHALL support nodes as module functions with standard signatures
+4. WHERE workflow contains conditional branches THEN system SHALL evaluate edge conditions using pattern matching or guards
+5. WHEN workflow module is compiled THEN system SHALL extract and validate workflow graph structure
+6. IF function has incorrect arity THEN Elixir compiler SHALL fail with clear error message
+7. WHILE workflow execution is in progress THEN original module code SHALL remain immutable (versioned)
+8. WHERE workflow has circular dependencies THEN system SHALL detect during compile-time graph analysis
+
+**Code-First Features:**
+```elixir
+defmodule MyWorkflow do
+  use Cerebelum.Workflow
+
+  @doc "Start node"
+  def start(input), do: {:ok, Map.put(input, :status, :started)}
+
+  @doc "Process data"
+  def process(state), do: {:ok, transform(state)}
+
+  def finish(state), do: {:ok, state}
+
+  # Define graph using function references (compile-time checked!)
+  workflow do
+    edge &start/1 -> &process/1
+    edge &process/1 -> &finish/1
+  end
+end
+```
+
+**Compile-Time Validation:**
+- Module existence checked by compiler
+- Function existence checked by compiler
+- Function arity checked by compiler
+- Type specs validated by Dialyzer
+- Undefined variables caught immediately
+- Pattern matching errors detected
 
 **Edge Cases:**
-- Empty workflow definitions
-- Workflows with only entrypoint, no nodes
-- Self-referencing nodes
+- Workflows with no edges (single-node)
+- Self-referencing nodes (recursive calls)
 - Disconnected graph components
-- Missing entrypoint specification
+- Private functions referenced in workflow
+- Dynamic function references (not allowed)
+- Workflows calling other workflows
 
 ---
 
@@ -124,21 +154,29 @@ Cerebelum Core is the foundational workflow orchestration engine. It provides de
 
 #### Acceptance Criteria
 
-1. WHEN workflow definition changes THEN system SHALL create new version while preserving old versions
-2. IF workflow execution is replayed THEN system SHALL use exact version from original execution
-3. WHILE workflow code evolves THEN system SHALL maintain version registry with code snapshots
-4. WHERE workflow module is updated THEN system SHALL detect version mismatch during replay
+1. WHEN workflow module code changes THEN system SHALL create new version while preserving old module bytecode
+2. IF workflow execution is replayed THEN system SHALL use exact module version (BEAM bytecode) from original execution
+3. WHILE workflow code evolves THEN system SHALL maintain version registry with compiled module snapshots
+4. WHERE workflow module is recompiled THEN system SHALL detect version mismatch during replay
 5. WHEN workflow version is incompatible THEN system SHALL provide clear migration path or compatibility mode
-6. IF workflow uses dynamically loaded modules THEN system SHALL snapshot module code with execution
+6. IF workflow calls other modules THEN system SHALL snapshot dependency module bytecode with execution
 7. WHILE multiple workflow versions exist THEN system SHALL allow selective cleanup of old versions
-8. WHERE workflow has breaking changes THEN system SHALL prevent replay and suggest re-execution
+8. WHERE workflow has breaking changes (function signature changes) THEN system SHALL prevent replay and suggest re-execution
+
+**Module Version Tracking:**
+- Store compiled BEAM bytecode for each version
+- Hash module attributes and function signatures
+- Detect function signature changes (arity, return types)
+- Track `@moduledoc`, `@vsn`, and custom version attributes
+- Maintain version graph for migrations
 
 **Edge Cases:**
-- Deleted workflow definitions
-- Module renaming/moving
-- Dependency version changes
+- Deleted workflow modules
+- Module renaming/moving in codebase
+- Dependency version changes (Hex packages)
 - Elixir version upgrades
 - OTP behavior changes
+- Private function changes (internal refactoring)
 
 ---
 
@@ -174,17 +212,29 @@ Cerebelum Core is the foundational workflow orchestration engine. It provides de
 
 1. WHEN debug session is created THEN system SHALL load complete execution history
 2. IF developer requests step forward THEN system SHALL advance to next event and update state
-3. WHILE stepping through execution THEN system SHALL display current node, state, and variables
+3. WHILE stepping through execution THEN system SHALL display current function, state, and variables
 4. WHERE developer jumps to specific event THEN system SHALL reconstruct state up to that point
 5. WHEN developer requests current state THEN system SHALL show exact workflow state at that event
 6. IF execution contains errors THEN system SHALL allow stepping up to and past error event
-7. WHILE debugging THEN system SHALL support breakpoints on specific nodes or conditions
+7. WHILE debugging THEN system SHALL support breakpoints on specific functions (e.g., `&MyWorkflow.process/1`)
 8. WHERE execution has parallel branches THEN system SHALL show concurrent execution timeline
 
+**Debug Visualization:**
+```elixir
+# Example debug output
+Cerebelum.Debug.step_forward(execution_id)
+# =>
+# Function: MyWorkflow.process/1
+# State: %{order_id: "123", total: 99.99}
+# Event: node_completed
+# Timestamp: 2024-01-15T10:30:45Z
+# Next: &MyWorkflow.charge_card/1
+```
+
 **Edge Cases:**
-- Stepping through infinite loops
+- Stepping through infinite loops (recursive functions)
 - Debugging recursive workflows
-- Very large state objects
+- Very large state objects (>10MB)
 - Debugging across process boundaries
 - Concurrent execution visualization
 
@@ -261,23 +311,57 @@ Cerebelum Core is the foundational workflow orchestration engine. It provides de
 
 #### Acceptance Criteria
 
-1. WHEN workflow starts THEN system SHALL execute from designated entrypoint node
-2. IF node completes successfully THEN system SHALL follow edges to next nodes
-3. WHILE executing parallel nodes THEN system SHALL run them concurrently without blocking
-4. WHERE edge has condition THEN system SHALL evaluate condition before traversal
-5. WHEN all nodes complete THEN system SHALL mark workflow as completed
-6. IF node execution fails THEN system SHALL execute error handler if defined
-7. WHILE workflow runs THEN system SHALL enforce timeout limits per node and total execution
+1. WHEN workflow starts THEN system SHALL execute from designated entrypoint function
+2. IF function completes successfully THEN system SHALL follow edges to next functions
+3. WHILE executing parallel functions THEN system SHALL run them concurrently using Task.async without blocking
+4. WHERE edge has condition (guard or pattern match) THEN system SHALL evaluate condition before traversal
+5. WHEN all functions complete THEN system SHALL mark workflow as completed
+6. IF function execution raises exception THEN system SHALL execute error handler function if defined
+7. WHILE workflow runs THEN system SHALL enforce timeout limits per function and total execution
 8. WHERE workflow has cycles THEN system SHALL detect infinite loops and terminate with error
 
-**Supported Node Types:**
-- Function nodes (execute Elixir function)
-- Map nodes (transform data)
-- Conditional nodes (branch based on predicate)
-- Parallel nodes (fan-out execution)
-- Sequential nodes (ordered execution)
-- Delay nodes (pause for duration)
-- Error handler nodes
+**Execution Model:**
+```elixir
+defmodule MyWorkflow do
+  use Cerebelum.Workflow
+
+  # Sequential execution
+  def start(input), do: {:ok, input}
+  def process(state), do: {:ok, transform(state)}
+
+  # Parallel execution - returns list of async tasks
+  def parallel_step(state) do
+    {:parallel, [
+      fn -> fetch_user(state) end,
+      fn -> fetch_orders(state) end,
+      fn -> fetch_inventory(state) end
+    ]}
+  end
+
+  # Conditional branching via pattern matching
+  def conditional_step({:ok, data}), do: {:ok, data}
+  def conditional_step({:error, reason}), do: {:error, reason}
+
+  # Delay execution (doesn't block BEAM)
+  def wait_step(state), do: {:sleep, seconds: 60, state: state}
+
+  # Error handler
+  def handle_error(state, error), do: {:compensate, error}
+
+  workflow do
+    edge &start/1 -> &process/1
+    edge &process/1 -> &parallel_step/1
+    edge &parallel_step/1 -> &conditional_step/1
+  end
+end
+```
+
+**Function Return Types:**
+- `{:ok, state}` - Continue to next edge
+- `{:error, reason}` - Trigger error handler
+- `{:sleep, opts, state}` - Pause without blocking
+- `{:parallel, tasks}` - Execute tasks concurrently
+- `{:wait_for_approval, opts}` - Human-in-the-loop pause
 
 ---
 
@@ -405,62 +489,86 @@ Cerebelum Core is the foundational workflow orchestration engine. It provides de
 
 #### Acceptance Criteria
 
-1. WHEN defining workflow THEN developer SHALL specify nodes and conditional edges
-2. IF edge has condition THEN system SHALL evaluate condition before traversal
+1. WHEN defining workflow THEN developer SHALL specify functions and conditional edges using pattern matching
+2. IF edge has condition (guard clause or pattern) THEN system SHALL evaluate condition before traversal
 3. WHILE executing graph THEN system SHALL support cycles for iterative refinement
 4. WHERE cycle detected THEN system SHALL track iteration count and enforce max limit
-5. WHEN state merges THEN system SHALL apply merge strategy (replace, append, custom)
-6. IF node has parallel edges THEN system SHALL execute target nodes concurrently
+5. WHEN state merges THEN system SHALL apply merge strategy (replace, append, custom function)
+6. IF function has parallel edges THEN system SHALL execute target functions concurrently
 7. WHILE iterating THEN system SHALL record all iterations in event log
 8. WHERE termination condition met THEN system SHALL exit loop and proceed
 
-**Graph Definition:**
+**Code-First Graph Definition:**
 ```elixir
-# Elixir/Core API
-workflow = %{
-  "name" => "iterative_workflow",
-  "entrypoint" => "generate",
-  "nodes" => %{
-    "generate" => %{
-      "type" => "function",
-      "module" => "MyApp",
-      "function" => "generate",
-      "next" => ["evaluate"]
-    },
-    "evaluate" => %{
-      "type" => "conditional",
-      "conditions" => [
-        %{"predicate" => "quality_check", "next" => "finalize"},
-        %{"predicate" => "needs_improvement", "next" => "improve"}
-      ]
-    },
-    "improve" => %{
-      "type" => "function",
-      "module" => "MyApp",
-      "function" => "improve",
-      "next" => ["generate"]  # Loop back!
-    },
-    "finalize" => %{
-      "type" => "function",
-      "module" => "MyApp",
-      "function" => "finalize"
-    }
-  },
-  "max_iterations" => 5  # Safety limit
-}
+defmodule IterativeWorkflow do
+  use Cerebelum.Workflow
+
+  @max_iterations 5
+
+  # Generate initial content
+  def generate(state) do
+    content = AI.generate(state.prompt)
+    {:ok, Map.put(state, :content, content)}
+  end
+
+  # Evaluate quality - returns different tuples based on quality
+  def evaluate(%{content: content, iteration: iter} = state) when iter >= @max_iterations do
+    {:max_iterations, state}  # Force exit after max iterations
+  end
+
+  def evaluate(%{content: content} = state) do
+    case quality_check(content) do
+      {:ok, score} when score >= 0.8 ->
+        {:high_quality, Map.put(state, :score, score)}
+      {:ok, score} ->
+        {:needs_improvement, Map.put(state, :score, score)}
+    end
+  end
+
+  # Improve content based on feedback
+  def improve(state) do
+    improved = AI.improve(state.content, state.feedback)
+    iteration = Map.get(state, :iteration, 0) + 1
+
+    state
+    |> Map.put(:content, improved)
+    |> Map.put(:iteration, iteration)
+    |> then(&{:ok, &1})
+  end
+
+  # Finalize result
+  def finalize(state) do
+    {:ok, Map.put(state, :status, :completed)}
+  end
+
+  # Define graph with cycles
+  workflow do
+    edge &generate/1 -> &evaluate/1
+
+    # Conditional edges based on pattern matching
+    edge &evaluate/1 -> &finalize/1, when: {:high_quality, _}
+    edge &evaluate/1 -> &improve/1, when: {:needs_improvement, _}
+    edge &evaluate/1 -> &finalize/1, when: {:max_iterations, _}
+
+    # Cycle: improve loops back to generate
+    edge &improve/1 -> &generate/1
+  end
+end
 ```
 
 **State Management:**
-- State is immutable (functional)
-- Each node returns new state
-- Merge strategies for parallel nodes
-- State history tracking
+- State is immutable (pure functional)
+- Each function returns `{:ok, new_state}` or `{:status, new_state}`
+- Pattern matching on return tuples determines edge traversal
+- Merge strategies for parallel edges via custom functions
+- State history tracked in event log
 
 **Safety Features:**
-- Max iterations limit (prevent infinite loops)
-- Timeout per iteration
-- Cycle detection and warnings
-- State size limits
+- Max iterations limit (compile-time constant `@max_iterations`)
+- Guard clauses prevent infinite loops
+- Timeout per iteration (enforced by execution engine)
+- Cycle detection with warnings in compile-time graph analysis
+- State size limits (configurable per workflow)
 
 ---
 

@@ -95,46 +95,94 @@ graph TB
 defmodule Cerebelum.Domain.Entities.Workflow do
   @moduledoc """
   Workflow aggregate root.
+
+  In code-first approach, the workflow is identified by its module,
+  but metadata like version, BEAM bytecode, and graph structure are stored
+  for versioning and replay purposes.
   """
 
-  @enforce_keys [:id, :name, :definition, :entrypoint, :version]
+  @enforce_keys [:id, :module, :version, :bytecode_hash]
   defstruct [
-    :id,           # UUID
-    :name,         # String
-    :definition,   # Map (workflow DSL)
-    :entrypoint,   # String (node ID)
-    :version,      # Integer
-    :nodes,        # Map of node_id => Node
-    :edges,        # List of {from, to, condition}
-    :created_at,   # DateTime
-    :updated_at    # DateTime
+    :id,                # UUID
+    :module,            # Module atom (e.g., MyApp.ProcessOrderWorkflow)
+    :version,           # Integer (incremented on code changes)
+    :bytecode_hash,     # SHA256 of compiled BEAM bytecode
+    :bytecode,          # Binary (compiled BEAM code for replay)
+    :graph,             # Compiled graph structure from macro
+    :entrypoint,        # Function capture (e.g., &MyWorkflow.start/1)
+    :created_at,        # DateTime
+    :updated_at         # DateTime
   ]
 
   @type t :: %__MODULE__{
     id: String.t(),
-    name: String.t(),
-    definition: map(),
-    entrypoint: String.t(),
+    module: module(),
     version: integer(),
-    nodes: %{String.t() => Node.t()},
-    edges: list({String.t(), String.t(), function()}),
+    bytecode_hash: String.t(),
+    bytecode: binary() | nil,
+    graph: WorkflowGraph.t() | nil,
+    entrypoint: function(),
     created_at: DateTime.t(),
     updated_at: DateTime.t()
   }
 
   @doc """
-  Creates a new workflow from definition.
-  Validates structure and returns {:ok, workflow} or {:error, reason}.
+  Creates a new workflow from compiled module.
+  Extracts graph structure from module attributes set by `use Cerebelum.Workflow` macro.
   """
-  @spec new(map()) :: {:ok, t()} | {:error, String.t()}
-  def new(definition) do
-    # Validation logic here
+  @spec from_module(module()) :: {:ok, t()} | {:error, String.t()}
+  def from_module(module) do
+    with :ok <- validate_module_loaded(module),
+         {:ok, graph} <- extract_graph(module),
+         {:ok, entrypoint} <- extract_entrypoint(module),
+         {:ok, bytecode} <- get_module_bytecode(module) do
+      {:ok, %__MODULE__{
+        id: UUID.uuid4(),
+        module: module,
+        version: 1,
+        bytecode_hash: compute_hash(bytecode),
+        bytecode: bytecode,
+        graph: graph,
+        entrypoint: entrypoint,
+        created_at: DateTime.utc_now(),
+        updated_at: DateTime.utc_now()
+      }}
+    end
   end
 
-  @doc "Validates workflow structure"
+  @doc "Validates workflow graph structure extracted from module"
   @spec validate(t()) :: :ok | {:error, list(String.t())}
   def validate(%__MODULE__{} = workflow) do
-    # Validate nodes, edges, cycles, entrypoint
+    # Validate graph: cycles, reachability, function existence
+  end
+
+  defp extract_graph(module) do
+    # Read @workflow_graph attribute set by macro
+    case module.__info__(:attributes)[:workflow_graph] do
+      [graph] -> {:ok, graph}
+      _ -> {:error, "Module does not define workflow graph"}
+    end
+  end
+
+  defp extract_entrypoint(module) do
+    # Read @entrypoint attribute or default to &module.start/1
+    case module.__info__(:attributes)[:entrypoint] do
+      [func] -> {:ok, func}
+      _ -> {:ok, &module.start/1}
+    end
+  end
+
+  defp get_module_bytecode(module) do
+    case :code.which(module) do
+      beam_file when is_list(beam_file) ->
+        {:ok, File.read!(beam_file)}
+      _ ->
+        {:error, "Cannot find BEAM file for module"}
+    end
+  end
+
+  defp compute_hash(bytecode) do
+    :crypto.hash(:sha256, bytecode) |> Base.encode16(case: :lower)
   end
 end
 ```
@@ -222,28 +270,83 @@ end
 ```
 
 ```elixir
-# lib/cerebelum/domain/entities/node.ex
-defmodule Cerebelum.Domain.Entities.Node do
+# lib/cerebelum/domain/value_objects/workflow_graph.ex
+defmodule Cerebelum.Domain.ValueObjects.WorkflowGraph do
   @moduledoc """
-  Workflow node entity.
+  Workflow graph structure extracted from compiled module.
+
+  In code-first approach, the graph is defined declaratively using the `workflow` macro,
+  but compiled into this intermediate representation for execution and analysis.
   """
 
-  @enforce_keys [:id, :type, :config]
-  defstruct [:id, :type, :config, :next_nodes]
+  @enforce_keys [:edges, :entrypoint]
+  defstruct [:edges, :entrypoint, :metadata]
 
-  @type node_type :: :function | :map | :conditional | :parallel | :sequential | :delay
-
-  @type t :: %__MODULE__{
-    id: String.t(),
-    type: node_type(),
-    config: map(),
-    next_nodes: list(String.t())
+  @type edge :: %{
+    from: function(),
+    to: function(),
+    condition: function() | nil,
+    metadata: map()
   }
 
-  @doc "Validates node configuration"
-  @spec validate(t()) :: :ok | {:error, String.t()}
-  def validate(%__MODULE__{type: type, config: config}) do
-    # Type-specific validation
+  @type t :: %__MODULE__{
+    edges: list(edge()),
+    entrypoint: function(),
+    metadata: map()
+  }
+
+  @doc "Creates graph from edge list"
+  @spec new(list(edge()), function()) :: t()
+  def new(edges, entrypoint) do
+    %__MODULE__{
+      edges: edges,
+      entrypoint: entrypoint,
+      metadata: %{}
+    }
+  end
+
+  @doc "Validates graph structure"
+  @spec validate(t()) :: :ok | {:error, list(String.t())}
+  def validate(%__MODULE__{edges: edges, entrypoint: entrypoint}) do
+    errors = []
+    |> validate_entrypoint(edges, entrypoint)
+    |> detect_unreachable_functions(edges, entrypoint)
+    |> detect_cycles(edges)
+
+    case errors do
+      [] -> :ok
+      errors -> {:error, errors}
+    end
+  end
+
+  @doc "Returns all functions reachable from entrypoint"
+  @spec reachable_functions(t()) :: MapSet.t(function())
+  def reachable_functions(%__MODULE__{edges: edges, entrypoint: entrypoint}) do
+    do_reachable(edges, MapSet.new([entrypoint]), MapSet.new([entrypoint]))
+  end
+
+  defp do_reachable(_edges, to_visit, visited) when map_size(to_visit) == 0 do
+    visited
+  end
+
+  defp do_reachable(edges, to_visit, visited) do
+    # DFS to find all reachable functions
+    # Implementation here
+  end
+
+  defp validate_entrypoint(errors, edges, entrypoint) do
+    # Ensure entrypoint is valid and exists in edges
+    errors
+  end
+
+  defp detect_unreachable_functions(errors, edges, entrypoint) do
+    # Warn about functions defined but not reachable from entrypoint
+    errors
+  end
+
+  defp detect_cycles(errors, edges) do
+    # Detect cycles (allowed with guards, but should warn)
+    errors
   end
 end
 ```
@@ -309,18 +412,22 @@ end
 # lib/cerebelum/domain/services/workflow_validator.ex
 defmodule Cerebelum.Domain.Services.WorkflowValidator do
   @moduledoc """
-  Domain service for validating workflow definitions.
+  Domain service for validating workflow module definitions.
+
+  In code-first approach, most validation happens at compile-time,
+  but we still validate runtime concerns like graph structure, cycles, etc.
   """
 
-  alias Cerebelum.Domain.Entities.{Workflow, Node}
+  alias Cerebelum.Domain.Entities.Workflow
+  alias Cerebelum.Domain.ValueObjects.WorkflowGraph
 
   @spec validate(Workflow.t()) :: :ok | {:error, list(String.t())}
-  def validate(workflow) do
+  def validate(%Workflow{graph: graph, module: module} = workflow) do
     errors = []
-    |> validate_entrypoint(workflow)
-    |> validate_nodes(workflow)
-    |> validate_edges(workflow)
-    |> detect_cycles(workflow)
+    |> validate_module_loaded(module)
+    |> validate_graph(graph)
+    |> validate_functions_exist(graph, module)
+    |> detect_infinite_loops(graph)
 
     case errors do
       [] -> :ok
@@ -328,46 +435,57 @@ defmodule Cerebelum.Domain.Services.WorkflowValidator do
     end
   end
 
-  defp validate_entrypoint(errors, %{entrypoint: ep, nodes: nodes}) do
-    if Map.has_key?(nodes, ep) do
-      errors
-    else
-      ["Entrypoint '#{ep}' not found in nodes" | errors]
+  defp validate_module_loaded(errors, module) do
+    case Code.ensure_loaded?(module) do
+      true -> errors
+      false -> ["Module #{inspect(module)} is not loaded" | errors]
     end
   end
 
-  defp validate_nodes(errors, %{nodes: nodes}) do
-    Enum.reduce(nodes, errors, fn {_id, node}, acc ->
-      case Node.validate(node) do
-        :ok -> acc
-        {:error, reason} -> [reason | acc]
+  defp validate_graph(errors, graph) do
+    case WorkflowGraph.validate(graph) do
+      :ok -> errors
+      {:error, graph_errors} -> graph_errors ++ errors
+    end
+  end
+
+  defp validate_functions_exist(errors, %WorkflowGraph{edges: edges}, module) do
+    # Ensure all functions referenced in edges actually exist in module
+    edges
+    |> Enum.flat_map(fn %{from: from, to: to} -> [from, to] end)
+    |> Enum.uniq()
+    |> Enum.reduce(errors, fn func, acc ->
+      if function_exported?(module, func, 1) do
+        acc
+      else
+        ["Function #{inspect(func)} not exported from #{inspect(module)}" | acc]
       end
     end)
   end
 
-  defp validate_edges(errors, %{edges: edges, nodes: nodes}) do
-    Enum.reduce(edges, errors, fn {from, to, _condition}, acc ->
-      cond do
-        not Map.has_key?(nodes, from) ->
-          ["Edge references unknown node: #{from}" | acc]
-        not Map.has_key?(nodes, to) ->
-          ["Edge references unknown node: #{to}" | acc]
-        true ->
-          acc
-      end
-    end)
-  end
-
-  defp detect_cycles(errors, workflow) do
-    case has_cycle?(workflow) do
+  defp detect_infinite_loops(errors, graph) do
+    case has_unbounded_cycle?(graph) do
       false -> errors
-      true -> ["Workflow contains cycles without max_iterations" | errors]
+      true ->
+        ["Workflow contains cycles without iteration guards - potential infinite loop" | errors]
     end
   end
 
-  defp has_cycle?(%{edges: edges, nodes: nodes}) do
-    # Implement cycle detection using DFS
-    # Allow cycles only if max_iterations is set
+  defp has_unbounded_cycle?(%WorkflowGraph{edges: edges}) do
+    # Detect cycles using DFS
+    # Cycles are OK if they have guards that will eventually exit
+    # But warn if cycle has no obvious termination condition
+    false  # TODO: implement cycle detection
+  end
+
+  defp function_exported?(module, func, arity) when is_function(func) do
+    # Extract function info
+    %{module: m, name: name, arity: a} = Function.info(func)
+    m == module and function_exported?(module, name, a)
+  end
+
+  defp function_exported?(module, name, arity) when is_atom(name) do
+    function_exported?(module, name, arity)
   end
 end
 ```
@@ -377,44 +495,123 @@ end
 defmodule Cerebelum.Domain.Services.ExecutionOrchestrator do
   @moduledoc """
   Domain service for orchestrating workflow execution.
-  Coordinates node execution following graph edges.
+  Executes workflow functions following graph edges.
   """
 
-  alias Cerebelum.Domain.Entities.{Workflow, Execution, Node}
+  alias Cerebelum.Domain.Entities.{Workflow, Execution}
+  alias Cerebelum.Domain.ValueObjects.WorkflowGraph
   alias Cerebelum.Domain.Ports.{TimeProvider, EventStore}
 
   @type execution_context :: %{
     workflow: Workflow.t(),
     execution: Execution.t(),
-    current_node: String.t(),
-    iteration: integer()
+    current_function: function(),
+    state: map(),
+    iteration: integer(),
+    time_provider: TimeProvider.t(),
+    event_store: EventStore.t()
   }
 
   @doc "Executes workflow from entrypoint"
   @spec execute(Workflow.t(), Execution.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def execute(workflow, execution, opts) do
+  def execute(%Workflow{entrypoint: entrypoint} = workflow, execution, opts) do
     time_provider = Keyword.get(opts, :time_provider)
     event_store = Keyword.get(opts, :event_store)
 
     context = %{
       workflow: workflow,
       execution: execution,
-      current_node: workflow.entrypoint,
+      current_function: entrypoint,
+      state: execution.input,
       iteration: 0,
       time_provider: time_provider,
       event_store: event_store
     }
 
-    execute_node(context)
+    execute_function(context)
   end
 
-  defp execute_node(context) do
-    # Node execution logic
-    # 1. Get current node
-    # 2. Execute based on type
-    # 3. Emit events
-    # 4. Evaluate edges
-    # 5. Continue to next node(s)
+  defp execute_function(context) do
+    %{current_function: func, state: state, execution: execution} = context
+
+    # Emit function started event
+    emit_event(context, :function_started, %{function: func, state: state})
+
+    # Execute the function
+    case apply_function(func, state) do
+      {:ok, new_state} ->
+        emit_event(context, :function_completed, %{function: func, result: new_state})
+        continue_execution(context, new_state)
+
+      {:error, reason} ->
+        emit_event(context, :function_failed, %{function: func, error: reason})
+        {:error, reason}
+
+      {:sleep, opts, new_state} ->
+        # Handle sleep without blocking
+        handle_sleep(context, opts, new_state)
+
+      {:parallel, tasks} ->
+        # Execute multiple functions concurrently
+        handle_parallel(context, tasks)
+
+      other ->
+        {:error, "Invalid function return value: #{inspect(other)}"}
+    end
+  end
+
+  defp apply_function(func, state) when is_function(func, 1) do
+    func.(state)
+  rescue
+    exception ->
+      {:error, %{exception: exception, stacktrace: __STACKTRACE__}}
+  end
+
+  defp continue_execution(context, new_state) do
+    # Find next functions based on edges
+    case find_next_functions(context.workflow.graph, context.current_function, new_state) do
+      [] ->
+        # No more functions, execution complete
+        {:ok, new_state}
+
+      [next_func] ->
+        # Single next function
+        execute_function(%{context | current_function: next_func, state: new_state})
+
+      multiple_funcs when is_list(multiple_funcs) ->
+        # Multiple next functions (parallel execution)
+        handle_parallel(context, Enum.map(multiple_funcs, &{&1, new_state}))
+    end
+  end
+
+  defp find_next_functions(%WorkflowGraph{edges: edges}, current_func, state) do
+    edges
+    |> Enum.filter(fn %{from: from} -> from == current_func end)
+    |> Enum.filter(fn edge -> evaluate_condition(edge, state) end)
+    |> Enum.map(fn %{to: to} -> to end)
+  end
+
+  defp evaluate_condition(%{condition: nil}, _state), do: true
+  defp evaluate_condition(%{condition: cond_func}, state) when is_function(cond_func) do
+    cond_func.(state)
+  end
+
+  defp handle_sleep(context, opts, new_state) do
+    # Emit sleep event and schedule continuation
+    emit_event(context, :sleep_started, %{opts: opts, state: new_state})
+    {:sleep, opts, new_state}
+  end
+
+  defp handle_parallel(context, tasks) do
+    # Execute tasks in parallel using Task.async
+    results = Task.async_many(tasks)
+    {:parallel, results}
+  end
+
+  defp emit_event(%{event_store: event_store, execution: execution}, type, payload) do
+    event_store.append(execution.id, [
+      %{type: type, payload: payload, timestamp: DateTime.utc_now()}
+    ])
   end
 end
 ```
@@ -564,10 +761,14 @@ end
 #### Use Cases
 
 ```elixir
-# lib/cerebelum/application/use_cases/create_workflow.ex
-defmodule Cerebelum.Application.UseCases.CreateWorkflow do
+# lib/cerebelum/application/use_cases/register_workflow.ex
+defmodule Cerebelum.Application.UseCases.RegisterWorkflow do
   @moduledoc """
-  Use case: Create a new workflow.
+  Use case: Register a workflow module.
+
+  In code-first approach, workflows are Elixir modules.
+  This use case extracts the graph, validates it, stores bytecode for versioning,
+  and registers it for execution.
   """
 
   alias Cerebelum.Domain.Entities.Workflow
@@ -575,17 +776,41 @@ defmodule Cerebelum.Application.UseCases.CreateWorkflow do
   alias Cerebelum.Domain.Ports.WorkflowRepository
 
   @type params :: %{
-    name: String.t(),
-    definition: map()
+    module: module()
   }
 
   @spec execute(params(), WorkflowRepository.t()) ::
     {:ok, Workflow.t()} | {:error, term()}
-  def execute(params, repository) do
-    with {:ok, workflow} <- Workflow.new(params),
+  def execute(%{module: module}, repository) do
+    with {:ok, workflow} <- Workflow.from_module(module),
          :ok <- WorkflowValidator.validate(workflow),
          {:ok, persisted} <- repository.create(workflow) do
       {:ok, persisted}
+    end
+  end
+
+  @doc """
+  Register workflow and return version number.
+  If workflow already exists with same bytecode hash, return existing version.
+  If bytecode changed, create new version.
+  """
+  @spec register_or_update(module(), WorkflowRepository.t()) ::
+    {:ok, Workflow.t()} | {:error, term()}
+  def register_or_update(module, repository) do
+    with {:ok, workflow} <- Workflow.from_module(module),
+         {:ok, existing} <- repository.get_by_module(module) do
+      if workflow.bytecode_hash == existing.bytecode_hash do
+        # No changes, return existing
+        {:ok, existing}
+      else
+        # Code changed, create new version
+        new_version = %{workflow | version: existing.version + 1}
+        repository.create(new_version)
+      end
+    else
+      {:error, :not_found} ->
+        # First time registration
+        execute(%{module: module}, repository)
     end
   end
 end
@@ -1007,16 +1232,24 @@ end
 ```elixir
 # lib/cerebelum/infrastructure/persistence/schemas/workflow_schema.ex
 defmodule Cerebelum.Infrastructure.Persistence.Schemas.WorkflowSchema do
+  @moduledoc """
+  Database schema for code-first workflows.
+
+  Stores module name, version, bytecode hash, and optionally the full BEAM bytecode
+  for replay/time-travel debugging purposes.
+  """
+
   use Ecto.Schema
   import Ecto.Changeset
 
   @primary_key {:id, :binary_id, autogenerate: true}
 
   schema "workflows" do
-    field :name, :string
-    field :version, :integer
-    field :definition, :map
-    field :entrypoint, :string
+    field :module, :string            # Module name as string (e.g., "MyApp.ProcessOrder")
+    field :version, :integer          # Incremented on code changes
+    field :bytecode_hash, :string     # SHA256 hash of BEAM bytecode
+    field :bytecode, :binary          # Full BEAM bytecode (for replay)
+    field :graph, :map                # Serialized graph structure (JSON)
 
     has_many :executions, Cerebelum.Infrastructure.Persistence.Schemas.ExecutionSchema
 
@@ -1025,9 +1258,10 @@ defmodule Cerebelum.Infrastructure.Persistence.Schemas.WorkflowSchema do
 
   def changeset(workflow, attrs) do
     workflow
-    |> cast(attrs, [:name, :version, :definition, :entrypoint])
-    |> validate_required([:name, :definition, :entrypoint])
-    |> unique_constraint([:name, :version])
+    |> cast(attrs, [:module, :version, :bytecode_hash, :bytecode, :graph])
+    |> validate_required([:module, :version, :bytecode_hash])
+    |> unique_constraint([:module, :version])
+    |> unique_constraint(:bytecode_hash)
   end
 end
 ```
@@ -1068,16 +1302,18 @@ defmodule Cerebelum.Repo.Migrations.CreateWorkflows do
   def change do
     create table(:workflows, primary_key: false) do
       add :id, :binary_id, primary_key: true
-      add :name, :string, null: false
+      add :module, :string, null: false
       add :version, :integer, null: false, default: 1
-      add :definition, :map, null: false
-      add :entrypoint, :string, null: false
+      add :bytecode_hash, :string, null: false
+      add :bytecode, :binary  # Can be large, nullable for storage optimization
+      add :graph, :map        # Serialized graph structure (JSON)
 
       timestamps()
     end
 
-    create unique_index(:workflows, [:name, :version])
-    create index(:workflows, [:name])
+    create unique_index(:workflows, [:module, :version])
+    create unique_index(:workflows, [:bytecode_hash])
+    create index(:workflows, [:module])
   end
 end
 ```
@@ -1140,17 +1376,16 @@ end
 lib/cerebelum/
 ├── domain/                                    # Pure business logic
 │   ├── entities/
-│   │   ├── workflow.ex
-│   │   ├── execution.ex
-│   │   └── node.ex
+│   │   ├── workflow.ex                        # Module-based workflow entity
+│   │   └── execution.ex
 │   ├── value_objects/
 │   │   ├── execution_id.ex
 │   │   ├── execution_status.ex
-│   │   └── node_config.ex
+│   │   └── workflow_graph.ex                  # Graph structure from macro
 │   ├── services/
-│   │   ├── workflow_validator.ex
-│   │   ├── execution_orchestrator.ex
-│   │   └── node_executor.ex
+│   │   ├── workflow_validator.ex              # Validates module-based workflows
+│   │   ├── execution_orchestrator.ex          # Executes functions following edges
+│   │   └── function_executor.ex               # Executes individual functions
 │   ├── ports/
 │   │   ├── workflow_repository.ex
 │   │   ├── execution_repository.ex
@@ -1162,7 +1397,7 @@ lib/cerebelum/
 │
 ├── application/                               # Use cases
 │   └── use_cases/
-│       ├── create_workflow.ex
+│       ├── register_workflow.ex               # Register workflow module
 │       ├── execute_workflow.ex
 │       ├── replay_execution.ex
 │       ├── get_execution_status.ex
@@ -1393,22 +1628,57 @@ end
 
 ## Summary
 
-This design document provides:
+This design document provides a **code-first workflow orchestration system** with:
 
+✅ **Code-First Workflow Definition** - Workflows as Elixir modules with compile-time validation
 ✅ **Complete Clean Architecture** - 4 layers with clear boundaries
-✅ **All Domain Entities** - Workflow, Execution, Node with full specs
+✅ **Module-Based Entities** - Workflow entity stores module bytecode and graph structure
+✅ **Function-Based Execution** - Nodes are functions, edges reference functions with compile-time checking
 ✅ **All Domain Ports** - 6 behaviours for dependency inversion
-✅ **Use Cases** - 5 main use cases with dependency injection
+✅ **Use Cases** - RegisterWorkflow, ExecuteWorkflow, ReplayExecution with dependency injection
 ✅ **Infrastructure** - Ecto repos, GenServers, deterministic system
-✅ **Database Schema** - Complete Ecto schemas and migrations
-✅ **Directory Structure** - Exact file organization
-✅ **Supervision Tree** - OTP application structure
-✅ **Sequence Diagrams** - Workflow execution flow
+✅ **Versioning Support** - Store BEAM bytecode for time-travel debugging and replay
+✅ **Database Schema** - Schemas for module storage, execution tracking, event sourcing
+✅ **Directory Structure** - Exact file organization following Clean Architecture
+✅ **Supervision Tree** - OTP application structure for fault tolerance
+✅ **Sequence Diagrams** - Workflow execution flow with function calls
 ✅ **Testing Strategy** - Unit, use case, integration tests
+
+**Key Architectural Decisions:**
+
+1. **Workflows = Modules**: Each workflow is an Elixir module using `use Cerebelum.Workflow`
+2. **Nodes = Functions**: Each workflow function has signature `(state) -> {:ok, new_state} | {:error, reason}`
+3. **Edges = Function References**: Graph defined using function captures `&start/1 -> &process/1`
+4. **Compile-Time Validation**: Elixir compiler validates function existence, arity, types
+5. **Bytecode Versioning**: Store BEAM bytecode with SHA256 hash for replay
+6. **Graph Extraction**: `use Cerebelum.Workflow` macro extracts graph at compile-time
+7. **Event Sourcing**: All function calls, results, errors stored as events
+8. **Deterministic Execution**: Time, random, external calls memoized per execution
+
+**Example Workflow:**
+```elixir
+defmodule MyApp.ProcessOrder do
+  use Cerebelum.Workflow
+
+  def start(input), do: {:ok, input}
+  def validate(state), do: {:ok, state}
+  def charge(state), do: PaymentService.charge(state)
+
+  workflow do
+    edge &start/1 -> &validate/1
+    edge &validate/1 -> &charge/1, when: {:ok, _}
+  end
+end
+
+# Register and execute
+Cerebelum.register_workflow(MyApp.ProcessOrder)
+Cerebelum.execute_workflow(MyApp.ProcessOrder, %{order_id: "123"})
+```
 
 **A development team can now start implementing with confidence.**
 
 **Next Steps:**
 1. Create `03-implementation-tasks.md` with specific tasks
 2. Set up project structure: `mix new cerebelum_core`
-3. Begin Phase 1: Foundation (migrations, schemas, repo)
+3. Implement `Cerebelum.Workflow` macro for compile-time graph extraction
+4. Begin Phase 1: Foundation (migrations, schemas, repo)
