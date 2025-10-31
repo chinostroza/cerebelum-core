@@ -1,0 +1,482 @@
+# Requirements - Cerebelum Core
+
+**Module:** cerebelum-core
+**Version:** 0.1.0
+**Status:** Draft
+
+## Introduction
+
+Cerebelum Core is the foundational workflow orchestration engine. It provides deterministic execution, event sourcing, and graph-based state management for building reliable, reproducible workflows.
+
+**Scope:** Core orchestration capabilities **without** AI-specific features (those are in `cerebelum-ai`).
+
+**Key Principles:**
+- General-purpose workflow engine
+- Deterministic and reproducible
+- Event-sourced for complete history
+- Clean Architecture for maintainability
+- No external service dependencies (pure orchestration)
+
+---
+
+## Requirements
+
+### Requirement 1: Workflow Definition and Management
+
+**User Story:** As a developer, I want to define workflows using a JSON/map-based DSL so that I can create complex execution flows without learning a new language.
+
+#### Acceptance Criteria
+
+1. WHEN developer provides workflow definition THEN system SHALL validate structure and node types
+2. IF workflow definition is invalid THEN system SHALL return specific validation errors with field locations
+3. WHILE workflow is being defined THEN system SHALL support nodes of types: function, map, conditional, parallel, sequential, delay
+4. WHERE workflow contains conditional branches THEN system SHALL evaluate edge conditions and route accordingly
+5. WHEN workflow is created THEN system SHALL assign unique workflow ID and version number
+6. IF workflow references non-existent modules or functions THEN system SHALL fail validation with clear error message
+7. WHILE workflow execution is in progress THEN system SHALL prevent workflow definition modifications
+8. WHERE workflow has circular dependencies THEN system SHALL detect and reject during validation
+
+**Edge Cases:**
+- Empty workflow definitions
+- Workflows with only entrypoint, no nodes
+- Self-referencing nodes
+- Disconnected graph components
+- Missing entrypoint specification
+
+---
+
+### Requirement 2: Deterministic Time Management
+
+**User Story:** As a developer, I want time-dependent operations to be deterministic so that workflow executions are 100% reproducible across runs.
+
+#### Acceptance Criteria
+
+1. WHEN workflow uses `DateTime.utc_now()` THEN system SHALL return controlled deterministic time
+2. IF workflow calls `Process.sleep(ms)` THEN system SHALL advance virtual time without actual waiting
+3. WHILE deterministic mode is active THEN system SHALL maintain separate virtual time per workflow execution
+4. WHERE workflow schedules delayed tasks THEN system SHALL execute them at deterministic virtual timestamps
+5. WHEN workflow execution is replayed THEN system SHALL use identical time sequence as original run
+6. IF workflow execution spans multiple OTP processes THEN system SHALL synchronize deterministic time across all processes
+7. WHILE time-based operations execute THEN system SHALL record all time operations in event log
+8. WHERE workflow requests current time multiple times THEN system SHALL return monotonically increasing time values
+
+**Edge Cases:**
+- Time operations across process boundaries
+- Timezone conversions in deterministic mode
+- Leap seconds and DST transitions
+- Concurrent time requests from parallel nodes
+- Negative time deltas
+
+---
+
+### Requirement 3: Deterministic Random Operations
+
+**User Story:** As a developer, I want random operations to be reproducible so that workflows with randomness can be debugged and tested.
+
+#### Acceptance Criteria
+
+1. WHEN workflow uses `:rand.uniform()` THEN system SHALL return seeded deterministic random values
+2. IF workflow generates UUIDs THEN system SHALL produce deterministic UUIDs based on execution seed
+3. WHILE deterministic mode is active THEN system SHALL maintain per-execution random seed
+4. WHERE workflow uses `Enum.shuffle()` THEN system SHALL produce identical shuffle order on replay
+5. WHEN workflow execution is replayed THEN system SHALL use same random seed as original execution
+6. IF multiple nodes request random values concurrently THEN system SHALL ensure deterministic ordering
+7. WHILE random operations execute THEN system SHALL record random calls in event log
+8. WHERE workflow forks into parallel branches THEN system SHALL assign deterministic sub-seeds to each branch
+
+**Edge Cases:**
+- Random operations in recursive functions
+- Random seed overflow/exhaustion
+- Cryptographic vs non-cryptographic randomness
+- Random operations in error handlers
+- Concurrent random requests
+
+---
+
+### Requirement 4: External Call Memoization
+
+**User Story:** As a developer, I want external API calls and database queries to be recorded and replayed so that workflows are fully deterministic even with external dependencies.
+
+#### Acceptance Criteria
+
+1. WHEN workflow makes HTTP request THEN system SHALL record request and response for replay
+2. IF workflow executes database query THEN system SHALL memoize query results
+3. WHILE workflow is being replayed THEN system SHALL return memoized responses instead of making real calls
+4. WHERE memoized call doesn't exist during replay THEN system SHALL fail with descriptive error
+5. WHEN workflow makes identical external call twice THEN system SHALL record both calls separately
+6. IF external call fails during recording THEN system SHALL record failure for replay
+7. WHILE memoization is active THEN system SHALL hash call parameters to detect changes
+8. WHERE workflow execution uses different parameters on replay THEN system SHALL detect divergence and warn
+
+**Edge Cases:**
+- External calls with side effects
+- Non-idempotent API operations
+- Large response payloads (>1MB)
+- Streaming responses
+- WebSocket connections
+- File system operations
+
+---
+
+### Requirement 5: Workflow Versioning and Evolution
+
+**User Story:** As a developer, I want to replay old workflow executions even after code changes so that I can debug production issues.
+
+#### Acceptance Criteria
+
+1. WHEN workflow definition changes THEN system SHALL create new version while preserving old versions
+2. IF workflow execution is replayed THEN system SHALL use exact version from original execution
+3. WHILE workflow code evolves THEN system SHALL maintain version registry with code snapshots
+4. WHERE workflow module is updated THEN system SHALL detect version mismatch during replay
+5. WHEN workflow version is incompatible THEN system SHALL provide clear migration path or compatibility mode
+6. IF workflow uses dynamically loaded modules THEN system SHALL snapshot module code with execution
+7. WHILE multiple workflow versions exist THEN system SHALL allow selective cleanup of old versions
+8. WHERE workflow has breaking changes THEN system SHALL prevent replay and suggest re-execution
+
+**Edge Cases:**
+- Deleted workflow definitions
+- Module renaming/moving
+- Dependency version changes
+- Elixir version upgrades
+- OTP behavior changes
+
+---
+
+### Requirement 6: Event Sourcing and Execution History
+
+**User Story:** As a developer, I want complete execution history stored as events so that I can analyze, replay, and debug any workflow run.
+
+#### Acceptance Criteria
+
+1. WHEN workflow executes THEN system SHALL emit events for every state transition
+2. IF node completes execution THEN system SHALL record node result, timing, and metadata
+3. WHILE workflow is running THEN system SHALL stream events to event store in real-time
+4. WHERE workflow fails THEN system SHALL record complete error context and stack trace
+5. WHEN events are queried THEN system SHALL return chronologically ordered event stream
+6. IF event store is unavailable THEN system SHALL buffer events in memory with overflow handling
+7. WHILE events are being recorded THEN system SHALL include correlation IDs for distributed tracing
+8. WHERE execution spans multiple nodes THEN system SHALL link events with parent-child relationships
+
+**Edge Cases:**
+- Event store failures
+- Event ordering in concurrent execution
+- Large event payloads
+- Event schema evolution
+- Long-running workflows with millions of events
+
+---
+
+### Requirement 7: Time Travel Debugging
+
+**User Story:** As a developer, I want to step through workflow execution history event by event so that I can understand exactly what happened at each step.
+
+#### Acceptance Criteria
+
+1. WHEN debug session is created THEN system SHALL load complete execution history
+2. IF developer requests step forward THEN system SHALL advance to next event and update state
+3. WHILE stepping through execution THEN system SHALL display current node, state, and variables
+4. WHERE developer jumps to specific event THEN system SHALL reconstruct state up to that point
+5. WHEN developer requests current state THEN system SHALL show exact workflow state at that event
+6. IF execution contains errors THEN system SHALL allow stepping up to and past error event
+7. WHILE debugging THEN system SHALL support breakpoints on specific nodes or conditions
+8. WHERE execution has parallel branches THEN system SHALL show concurrent execution timeline
+
+**Edge Cases:**
+- Stepping through infinite loops
+- Debugging recursive workflows
+- Very large state objects
+- Debugging across process boundaries
+- Concurrent execution visualization
+
+---
+
+### Requirement 8: Clean Architecture Compliance
+
+**User Story:** As a developer, I want the codebase to follow Clean Architecture so that it remains maintainable as complexity grows.
+
+#### Acceptance Criteria
+
+1. WHEN adding new features THEN system SHALL enforce layer separation (Domain, Application, Infrastructure, Presentation)
+2. IF Infrastructure needs domain logic THEN it SHALL implement behaviours defined in Domain ports
+3. WHILE developing THEN dependencies SHALL flow inward toward Domain layer only
+4. WHERE Application layer needs external services THEN it SHALL depend on abstractions, not concrete implementations
+5. WHEN testing components THEN each layer SHALL be independently testable via dependency injection
+6. IF Domain entities change THEN Infrastructure layer SHALL adapt without affecting Application layer
+7. WHILE adding adapters THEN new implementations SHALL satisfy existing port contracts
+8. WHERE business rules exist THEN they SHALL reside only in Domain layer, never in Infrastructure
+
+**Edge Cases:**
+- Circular dependencies across layers
+- Shared utilities placement
+- Cross-cutting concerns (logging, metrics)
+- Framework-specific code isolation
+
+---
+
+### Requirement 9: SOLID Principles Implementation
+
+**User Story:** As a developer, I want code to follow SOLID principles so that features are easy to extend without breaking existing functionality.
+
+#### Acceptance Criteria
+
+1. WHEN creating modules THEN each SHALL have single, well-defined responsibility (SRP)
+2. IF extending functionality THEN system SHALL use behaviours and protocols for extension (OCP)
+3. WHILE implementing behaviours THEN implementations SHALL be substitutable (LSP)
+4. WHERE defining interfaces THEN they SHALL be specific and cohesive, not monolithic (ISP)
+5. WHEN high-level modules need low-level functionality THEN they SHALL depend on abstractions (DIP)
+6. IF use case needs multiple services THEN it SHALL receive them via dependency injection
+7. WHILE adding node types THEN system SHALL use plugin architecture without modifying core
+8. WHERE validation logic exists THEN it SHALL be composable via small, focused validators
+
+---
+
+### Requirement 10: Comprehensive Testing Strategy
+
+**User Story:** As a developer, I want comprehensive test coverage so that I can refactor confidently without breaking functionality.
+
+#### Acceptance Criteria
+
+1. WHEN adding Domain entities THEN unit tests SHALL verify business logic in isolation
+2. IF creating use cases THEN tests SHALL use mocks for external dependencies
+3. WHILE implementing Infrastructure THEN integration tests SHALL verify database and external services
+4. WHERE adding API endpoints THEN controller tests SHALL verify HTTP contracts
+5. WHEN writing deterministic features THEN property tests SHALL verify reproducibility
+6. IF implementing behaviours THEN contract tests SHALL verify all implementations satisfy interface
+7. WHILE developing THEN test coverage SHALL maintain minimum 90% line coverage
+8. WHERE bugs are found THEN regression tests SHALL be added before fixing
+
+**Test Types Required:**
+- Unit tests (Domain layer)
+- Use case tests (Application layer)
+- Integration tests (Infrastructure layer)
+- API tests (Presentation layer)
+- Property-based tests (Deterministic behavior)
+- Contract tests (Behaviour implementations)
+
+---
+
+### Requirement 11: Workflow Execution Engine
+
+**User Story:** As a developer, I want to execute workflows with support for sequential, parallel, and conditional execution so that I can model complex business processes.
+
+#### Acceptance Criteria
+
+1. WHEN workflow starts THEN system SHALL execute from designated entrypoint node
+2. IF node completes successfully THEN system SHALL follow edges to next nodes
+3. WHILE executing parallel nodes THEN system SHALL run them concurrently without blocking
+4. WHERE edge has condition THEN system SHALL evaluate condition before traversal
+5. WHEN all nodes complete THEN system SHALL mark workflow as completed
+6. IF node execution fails THEN system SHALL execute error handler if defined
+7. WHILE workflow runs THEN system SHALL enforce timeout limits per node and total execution
+8. WHERE workflow has cycles THEN system SHALL detect infinite loops and terminate with error
+
+**Supported Node Types:**
+- Function nodes (execute Elixir function)
+- Map nodes (transform data)
+- Conditional nodes (branch based on predicate)
+- Parallel nodes (fan-out execution)
+- Sequential nodes (ordered execution)
+- Delay nodes (pause for duration)
+- Error handler nodes
+
+---
+
+### Requirement 14: Workflow State Checkpointing
+
+**User Story:** As a developer, I want to save workflow state at arbitrary points so that long-running workflows can resume after crashes.
+
+#### Acceptance Criteria
+
+1. WHEN checkpoint is created THEN system SHALL serialize complete workflow state
+2. IF workflow process crashes THEN system SHALL restore from last checkpoint
+3. WHILE checkpoint is being created THEN execution SHALL pause briefly without losing events
+4. WHERE checkpoint is restored THEN workflow SHALL resume from exact same state
+5. WHEN checkpoint is requested THEN system SHALL include deterministic context (time seed, random seed, memoization state)
+6. IF checkpoint data is corrupted THEN system SHALL detect corruption and fail fast with clear error
+7. WHILE checkpoint is stored THEN system SHALL use compression to minimize storage
+8. WHERE multiple checkpoints exist THEN system SHALL allow selective restoration to any checkpoint
+
+---
+
+### Requirement 16: Database Persistence
+
+**User Story:** As a system administrator, I want workflow data persisted in PostgreSQL so that data survives system restarts.
+
+#### Acceptance Criteria
+
+1. WHEN workflow is created THEN system SHALL persist definition to database
+2. IF execution starts THEN system SHALL create execution record with initial state
+3. WHILE execution runs THEN system SHALL update execution status and progress
+4. WHERE events are generated THEN system SHALL batch insert events for performance
+5. WHEN querying workflows THEN system SHALL support filtering by status, date, and tags
+6. IF database is unavailable THEN system SHALL fail gracefully and return 503 Service Unavailable
+7. WHILE under load THEN system SHALL use connection pooling with configured pool size
+8. WHERE data grows large THEN system SHALL support partitioning by date for event tables
+
+**Database Schema:**
+- workflows table (id, definition, version, created_at)
+- executions table (id, workflow_id, status, started_at, completed_at)
+- events table (id, execution_id, type, payload, timestamp)
+- checkpoints table (id, execution_id, state, created_at)
+
+---
+
+### Requirement 18: Error Handling and Recovery
+
+**User Story:** As a developer, I want comprehensive error handling so that workflow failures are graceful and debuggable.
+
+#### Acceptance Criteria
+
+1. WHEN node execution fails THEN system SHALL capture exception, message, and stacktrace
+2. IF error handler is defined THEN system SHALL execute error handler with error context
+3. WHILE error propagates THEN system SHALL mark execution as failed with failure reason
+4. WHERE retry policy is configured THEN system SHALL retry failed nodes with backoff
+5. WHEN unhandled error occurs THEN system SHALL fail workflow but preserve all events
+6. IF supervisor detects crash THEN system SHALL restart process and restore from checkpoint
+7. WHILE debugging failures THEN system SHALL provide full error context in event log
+8. WHERE multiple errors occur THEN system SHALL aggregate errors and report all failure points
+
+**Error Categories:**
+- Validation errors (4xx equivalent)
+- Execution errors (runtime failures)
+- Timeout errors
+- Resource exhaustion errors
+- External service errors
+- System errors (5xx equivalent)
+
+---
+
+### Requirement 20: Performance and Scalability
+
+**User Story:** As a system architect, I want the system to handle massive concurrency so that it scales to enterprise workloads.
+
+#### Acceptance Criteria
+
+1. WHEN system starts THEN it SHALL support minimum 10,000 concurrent workflow executions
+2. IF load increases THEN system SHALL scale horizontally by adding nodes to cluster
+3. WHILE processing workflows THEN system SHALL maintain < 10ms p95 latency for node execution
+4. WHERE throughput is measured THEN system SHALL process minimum 1,000 workflows/second
+5. WHEN memory usage grows THEN system SHALL implement backpressure to prevent OOM
+6. IF event rate is high THEN system SHALL use batching to reduce database round-trips
+7. WHILE cluster is distributed THEN system SHALL use consistent hashing for work distribution
+8. WHERE database is bottleneck THEN system SHALL implement read replicas and caching
+
+**Performance Targets:**
+- Support 100,000+ concurrent executions
+- Process 5,000+ workflows/second
+- p95 latency < 10ms for node execution
+- p99 latency < 50ms for node execution
+- Database query p95 < 5ms
+- Event storage p95 < 2ms
+
+---
+
+### Requirement 21: Development Experience
+
+**User Story:** As a developer, I want excellent DX so that I can be productive quickly.
+
+#### Acceptance Criteria
+
+1. WHEN starting development THEN `mix setup` SHALL install all dependencies and setup database
+2. IF running tests THEN `mix test` SHALL execute all tests with clear output
+3. WHILE coding THEN `mix format` SHALL format code according to project standards
+4. WHERE code quality is checked THEN `mix quality` SHALL run linting, formatting, and type checking
+5. WHEN documentation is needed THEN `mix docs` SHALL generate comprehensive HTML docs
+6. IF starting server THEN `mix phx.server` SHALL start with live reload enabled
+7. WHILE debugging THEN IEx sessions SHALL support full introspection and tracing
+8. WHERE deploying THEN `mix release` SHALL build production-ready release
+
+**DX Features:**
+- Single command setup (`mix setup`)
+- Fast test suite (< 5 seconds for unit tests)
+- Live reload for development
+- Comprehensive error messages
+- Interactive debugging (IEx)
+- Generated API documentation
+
+---
+
+### Requirement 34: Graph-Based State Management
+
+**Module:** `cerebelum-core` (core package)
+**Dependencies:** None (core feature)
+
+**User Story:** As a developer, I want to define workflows as graphs with cycles so that agents can iterate until a condition is met (like LangGraph).
+
+#### Acceptance Criteria
+
+1. WHEN defining workflow THEN developer SHALL specify nodes and conditional edges
+2. IF edge has condition THEN system SHALL evaluate condition before traversal
+3. WHILE executing graph THEN system SHALL support cycles for iterative refinement
+4. WHERE cycle detected THEN system SHALL track iteration count and enforce max limit
+5. WHEN state merges THEN system SHALL apply merge strategy (replace, append, custom)
+6. IF node has parallel edges THEN system SHALL execute target nodes concurrently
+7. WHILE iterating THEN system SHALL record all iterations in event log
+8. WHERE termination condition met THEN system SHALL exit loop and proceed
+
+**Graph Definition:**
+```elixir
+# Elixir/Core API
+workflow = %{
+  "name" => "iterative_workflow",
+  "entrypoint" => "generate",
+  "nodes" => %{
+    "generate" => %{
+      "type" => "function",
+      "module" => "MyApp",
+      "function" => "generate",
+      "next" => ["evaluate"]
+    },
+    "evaluate" => %{
+      "type" => "conditional",
+      "conditions" => [
+        %{"predicate" => "quality_check", "next" => "finalize"},
+        %{"predicate" => "needs_improvement", "next" => "improve"}
+      ]
+    },
+    "improve" => %{
+      "type" => "function",
+      "module" => "MyApp",
+      "function" => "improve",
+      "next" => ["generate"]  # Loop back!
+    },
+    "finalize" => %{
+      "type" => "function",
+      "module" => "MyApp",
+      "function" => "finalize"
+    }
+  },
+  "max_iterations" => 5  # Safety limit
+}
+```
+
+**State Management:**
+- State is immutable (functional)
+- Each node returns new state
+- Merge strategies for parallel nodes
+- State history tracking
+
+**Safety Features:**
+- Max iterations limit (prevent infinite loops)
+- Timeout per iteration
+- Cycle detection and warnings
+- State size limits
+
+---
+
+## Summary
+
+Cerebelum Core provides **16 core requirements** for general-purpose workflow orchestration:
+
+1. **Workflow Management** (Req 1, 11, 34) - Definition, execution, graph-based state
+2. **Deterministic System** (Req 2, 3, 4, 5) - Time, random, memoization, versioning
+3. **Event Sourcing** (Req 6, 7) - Complete history, time travel debugging
+4. **Architecture** (Req 8, 9, 10) - Clean Architecture, SOLID, testing
+5. **Reliability** (Req 14, 18) - Checkpointing, error handling
+6. **Persistence** (Req 16) - Database storage
+7. **Performance** (Req 20) - Scalability, concurrency
+8. **Developer Experience** (Req 21) - Tooling, setup
+
+**Total Acceptance Criteria:** 128 testable requirements in EARS format
+
+**No AI Dependencies:** This module is pure orchestration. AI features require `cerebelum-ai` module.
