@@ -2395,6 +2395,939 @@ end
 
 ---
 
+## Multi-Language SDK Architecture
+
+**Requirement Mapping:** This section fulfills **Requirement 35: Multi-Language SDK Support** (93 acceptance criteria) and **Requirement 36: SDK Language Support Roadmap** (34 acceptance criteria).
+
+### Philosophy: DX-First Native Syntax
+
+Unlike traditional orchestration platforms that impose a single style across all languages, Cerebelum SDKs embrace each language's ecosystem and idioms:
+
+- **Kotlin**: Jetpack Compose-style lambdas with receivers, `::functionName` references, sealed classes
+- **TypeScript**: Builder pattern with full type inference, discriminated unions
+- **Python**: Context managers (`with` statement), dataclasses, type hints with mypy
+- **Go**: Functional options, interfaces, explicit error handling
+- **Swift**: Result builders (`@WorkflowBuilder`), async/await, value types
+- **Rust**: Fluent builders, traits, `Result<T,E>`, zero-cost abstractions
+
+**Core Principle:** The SDK must feel native, not like "Cerebelum syntax ported to X language."
+
+### Dual-Mode Architecture
+
+Every SDK supports two execution modes with the **same workflow definition code**:
+
+```mermaid
+graph LR
+    subgraph "Developer's Machine"
+        CODE[Workflow Code]
+    end
+
+    subgraph "Local Mode (Dev/Test)"
+        CODE --> LOCAL[LocalExecutor]
+        LOCAL --> INMEM[In-Memory Engine]
+        INMEM --> RESULT1[Result]
+    end
+
+    subgraph "Distributed Mode (Production)"
+        CODE --> DIST[DistributedExecutor]
+        DIST --> GRPC[gRPC Client]
+        GRPC --> CORE[Core BEAM]
+        CORE --> WORKER[Worker Pool]
+        WORKER --> RESULT2[Result]
+    end
+```
+
+**Local Mode:**
+- Zero infrastructure required
+- Instant feedback loop
+- Debugger works normally (breakpoints, step-through)
+- Perfect for unit tests and local development
+- Sub-millisecond overhead vs direct function calls
+
+**Distributed Mode:**
+- Core BEAM orchestrates execution
+- Workers execute step functions
+- Event sourcing, replay, observability
+- Horizontal scalability
+- Production-grade fault tolerance
+
+**Code Example (Same code, different executor):**
+```kotlin
+// Define workflow once
+val orderFlow = workflow("order-flow") {
+    val validate = step<OrderInput, Order>(::validateOrder)
+    val payment = step<Order, Payment>(::chargePayment)
+    timeline { +validate; +payment }
+}
+
+// Local Mode - instant feedback
+val localExecutor = LocalExecutor()
+val result = localExecutor.execute(orderFlow, input)
+
+// Distributed Mode - production
+val distExecutor = DistributedExecutor("grpc://prod:9090")
+val result = distExecutor.execute(orderFlow, input)
+```
+
+### gRPC Service Interface
+
+Core BEAM exposes a gRPC service for SDK communication:
+
+```protobuf
+// worker_service.proto
+syntax = "proto3";
+
+service WorkerService {
+  // Worker lifecycle
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc Unregister(UnregisterRequest) returns (Empty);
+
+  // Task distribution (pull-based)
+  rpc PollForTask(PollRequest) returns (Task);
+  rpc SubmitResult(TaskResult) returns (Ack);
+
+  // Workflow submission
+  rpc SubmitBlueprint(Blueprint) returns (BlueprintValidation);
+  rpc ExecuteWorkflow(ExecuteRequest) returns (ExecutionHandle);
+}
+
+message RegisterRequest {
+  string worker_id = 1;
+  string language = 2;        // "kotlin", "typescript", "python", etc.
+  string sdk_version = 3;
+  repeated string capabilities = 4;
+  map<string, string> metadata = 5;
+}
+
+message RegisterResponse {
+  string worker_id = 1;
+  int32 heartbeat_interval_ms = 2;  // Default: 10000
+  int32 task_timeout_ms = 3;         // Default: 30000
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  WorkerStatus status = 2;
+  int32 current_task_count = 3;
+}
+
+message HeartbeatResponse {
+  bool acknowledged = 1;
+  repeated string tasks_to_cancel = 2;
+}
+
+message PollRequest {
+  string worker_id = 1;
+  int32 timeout_ms = 2;  // Long-polling timeout (default: 30000)
+}
+
+message Task {
+  string task_id = 1;
+  string execution_id = 2;
+  string workflow_id = 3;
+  string step_name = 4;
+  bytes input_data = 5;           // JSON or Protobuf
+  SerializationFormat format = 6;
+  map<string, string> context = 7;
+}
+
+message TaskResult {
+  string task_id = 1;
+  oneof result {
+    bytes success_data = 2;
+    TaskError error = 3;
+  }
+  SerializationFormat format = 4;
+  int64 execution_time_ms = 5;
+}
+
+message TaskError {
+  string error_type = 1;
+  string message = 2;
+  string stack_trace = 3;
+  map<string, string> metadata = 4;
+}
+
+enum SerializationFormat {
+  JSON = 0;
+  PROTOBUF = 1;
+}
+
+enum WorkerStatus {
+  IDLE = 0;
+  BUSY = 1;
+  DRAINING = 2;
+}
+```
+
+**Protocol Flow:**
+
+1. **Worker Registration:**
+   ```
+   Worker -> Core: Register(worker_id="kt-worker-1", language="kotlin")
+   Core -> Worker: RegisterResponse(heartbeat_interval=10s, task_timeout=30s)
+   ```
+
+2. **Heartbeat Loop:**
+   ```
+   Every 10s:
+     Worker -> Core: Heartbeat(worker_id, status=IDLE)
+     Core -> Worker: HeartbeatResponse(acknowledged=true)
+   ```
+
+3. **Task Distribution (Pull-Based):**
+   ```
+   Worker -> Core: PollForTask(worker_id, timeout=30s)
+   [Long-polling, blocks up to 30s]
+   Core -> Worker: Task(execution_id, step_name="validate", input_data)
+   ```
+
+4. **Task Execution:**
+   ```
+   Worker executes step function locally
+   Worker -> Core: SubmitResult(task_id, success_data=result)
+   Core -> Worker: Ack
+   ```
+
+**Why Pull-Based?**
+- Workers control their load (don't accept more than capacity)
+- No need for Core to track worker availability
+- Simpler failure handling (worker just stops polling)
+- Natural backpressure mechanism
+
+### Blueprint Serialization Protocol
+
+SDKs compile workflow definitions into a **Blueprint** JSON structure sent to Core:
+
+```json
+{
+  "id": "order-flow",
+  "version": "1.0.0",
+  "language": "kotlin",
+  "sdk_version": "1.0.0",
+  "timeline": ["validate", "payment", "notify"],
+  "diverges": {
+    "payment": [
+      {
+        "pattern": {"type": "timeout"},
+        "action": {"type": "retry", "max_attempts": 3, "delay_ms": 2000}
+      },
+      {
+        "pattern": {"type": "error", "subtype": "insufficient_funds"},
+        "action": {"type": "failed"}
+      }
+    ]
+  },
+  "branches": {
+    "validate": [
+      {
+        "condition": "amount > 10000",
+        "action": {"type": "skip_to", "target": "manual_review"}
+      },
+      {
+        "condition": "fraud_score > 0.9",
+        "action": {"type": "back_to", "target": "validate"}
+      }
+    ]
+  },
+  "steps_metadata": {
+    "validate": {
+      "function": "validateOrder",
+      "input_type": "OrderInput",
+      "output_type": "Order",
+      "arity": 2,
+      "timeout_ms": 5000
+    },
+    "payment": {
+      "function": "chargePayment",
+      "input_type": "Order",
+      "output_type": "Payment",
+      "arity": 2,
+      "timeout_ms": 30000
+    }
+  },
+  "metadata": {
+    "description": "Process customer orders",
+    "author": "team@company.com",
+    "tags": ["orders", "payments"],
+    "created_at": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+**Blueprint Validation by Core:**
+1. **Structure validation**: Required fields present
+2. **Reference validation**: All steps in timeline exist in steps_metadata
+3. **Action target validation**: skip_to/back_to reference valid steps
+4. **Cycle detection**: Detect infinite loops in back_to chains
+5. **Type consistency**: Verify output type of step N matches input type of step N+1 (if metadata provided)
+
+### Type Safety Implementation
+
+Each SDK implements compile-time type safety using language-specific features:
+
+**Kotlin (Phantom Types + KFunction References):**
+```kotlin
+// StepRef is a phantom type carrying input/output types
+interface StepRef<I, O> {
+    val name: String
+    val function: KFunction<O>
+}
+
+// Type-safe step definition
+fun <I, O> step(name: String, fn: KFunction<O>): StepRef<I, O> {
+    return StepRefImpl(name, fn)
+}
+
+// Usage with compile-time checking
+val validate = step<OrderInput, Order>(::validateOrder)  // ✅ Types verified
+val payment = step<Order, Payment>(::chargePayment)      // ✅ Types verified
+
+timeline {
+    +validate  // StepRef<OrderInput, Order>
+    +payment   // StepRef<Order, Payment> - Order matches!
+}
+
+// ❌ This would fail at compile-time
+val process = step<Boolean, String>(::processData)
+timeline {
+    +validate  // Outputs Order
+    +process   // Expects Boolean - COMPILE ERROR
+}
+```
+
+**TypeScript (Literal Types + Type Inference):**
+```typescript
+// Extract step names as literal union type
+type StepNames<T extends WorkflowDef> = keyof T["steps"];
+
+interface WorkflowDef<Steps extends Record<string, Function>> {
+  id: string;
+  steps: Steps;
+  timeline: (keyof Steps)[];  // Only valid step names allowed
+  diverge?: Record<keyof Steps, DivergeClauses>;
+  branch?: Record<keyof Steps, BranchClauses>;
+}
+
+// Usage with full type safety
+const orderFlow = workflow({
+  id: "order-flow",
+  steps: {
+    validateOrder: (input: OrderInput): Order => { /* ... */ },
+    chargePayment: (ctx: Context, order: Order): Payment => { /* ... */ }
+  },
+  timeline: ["validateOrder", "chargePayment"],  // ✅ Autocomplete + checking
+  diverge: {
+    chargePayment: [  // ✅ Only valid step names allowed
+      { pattern: { type: "timeout" }, action: retry({ maxAttempts: 3 }) }
+    ]
+  }
+});
+
+// ❌ These would fail at compile-time
+timeline: ["nonExistent"]  // ERROR: "nonExistent" not in steps
+diverge: { invalidStep: [...] }  // ERROR: "invalidStep" not in steps
+```
+
+**Python (Type Hints + Runtime Validation):**
+```python
+from typing import TypeVar, Generic, Callable
+
+I = TypeVar('I')
+O = TypeVar('O')
+
+class StepRef(Generic[I, O]):
+    def __init__(self, name: str, fn: Callable[[I], O]):
+        self.name = name
+        self.function = fn
+
+# Usage with mypy checking
+def validate_order(input: OrderInput) -> Order: ...
+def charge_payment(ctx: Context, order: Order) -> Payment: ...
+
+order_flow = WorkflowBuilder("order-flow")
+
+validate = order_flow.step(validate_order)  # StepRef[OrderInput, Order]
+payment = order_flow.step(charge_payment)   # StepRef[Order, Payment]
+
+with order_flow.timeline() as tl:
+    tl.add(validate)  # ✅ mypy verifies type
+    tl.add(payment)   # ✅ mypy verifies Order -> Payment compatible
+```
+
+### SDK Components Architecture
+
+Each SDK contains these core components:
+
+```
+cerebelum-sdk-<lang>/
+├── src/
+│   ├── workflow/
+│   │   ├── builder.{kt,ts,py}        # Workflow DSL builder
+│   │   ├── step_ref.{kt,ts,py}       # Type-safe step reference
+│   │   └── blueprint.{kt,ts,py}      # Blueprint serialization
+│   │
+│   ├── executor/
+│   │   ├── local_executor.{kt,ts,py}     # In-process execution
+│   │   ├── distributed_executor.{kt,ts,py} # gRPC-based execution
+│   │   └── execution_context.{kt,ts,py}   # Context passed to steps
+│   │
+│   ├── grpc/
+│   │   ├── client.{kt,ts,py}         # gRPC client wrapper
+│   │   ├── worker.{kt,ts,py}         # Worker registration & polling
+│   │   └── generated/                # Generated from worker_service.proto
+│   │
+│   ├── serialization/
+│   │   ├── json_serializer.{kt,ts,py}
+│   │   ├── protobuf_serializer.{kt,ts,py}
+│   │   └── serializer_registry.{kt,ts,py}
+│   │
+│   └── util/
+│       ├── logger.{kt,ts,py}
+│       ├── retry.{kt,ts,py}
+│       └── metrics.{kt,ts,py}
+│
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
+│
+├── examples/
+│   ├── hello_world.{kt,ts,py}
+│   ├── order_processing.{kt,ts,py}
+│   └── local_vs_distributed.{kt,ts,py}
+│
+└── docs/
+    └── README.md
+```
+
+### Serialization Strategy
+
+**Default: JSON (Zero Configuration)**
+
+```kotlin
+// Automatic JSON serialization
+data class Order(val id: String, val amount: Double)
+
+val result = executor.execute(workflow, Order("123", 100.0))
+// Serialized as: {"id": "123", "amount": 100.0}
+```
+
+**Opt-in: Protobuf (Performance Critical)**
+
+```kotlin
+// Annotate for Protobuf serialization
+@ProtoSerializable
+data class LargeDataset(val records: List<Record>)
+
+val result = executor.execute(workflow, dataset)
+// Serialized as Protobuf (3x faster, 2x smaller)
+```
+
+**Performance Comparison:**
+| Format   | Serialize Time | Deserialize Time | Size   |
+|----------|----------------|------------------|--------|
+| JSON     | 100ms          | 120ms            | 1.0 MB |
+| Protobuf | 35ms           | 40ms             | 0.5 MB |
+
+### Fault Tolerance & Health Monitoring
+
+**Heartbeat Mechanism:**
+```kotlin
+class Worker(private val grpcClient: WorkerServiceClient) {
+    private val heartbeatJob = CoroutineScope(Dispatchers.IO).launch {
+        while (isActive) {
+            try {
+                val response = grpcClient.heartbeat(
+                    HeartbeatRequest(
+                        workerId = workerId,
+                        status = currentStatus,
+                        currentTaskCount = activeTasks.size
+                    )
+                )
+
+                if (!response.acknowledged) {
+                    log.warn("Heartbeat not acknowledged - possible network issue")
+                }
+
+                // Cancel tasks requested by Core
+                response.tasksToCancel.forEach { taskId ->
+                    cancelTask(taskId)
+                }
+
+            } catch (e: Exception) {
+                log.error("Heartbeat failed", e)
+                reconnectionAttempts++
+            }
+
+            delay(heartbeatInterval)
+        }
+    }
+}
+```
+
+**Failure Detection:**
+1. **Worker misses 3 heartbeats** (30s): Core marks worker as dead
+2. **Task timeout** (default 30s): Core cancels task and reassigns
+3. **Worker crashes**: Tasks automatically reassigned to healthy workers
+4. **Network partition**: Worker keeps trying to reconnect, Core queues tasks
+
+**Dead Letter Queue (DLQ):**
+```elixir
+# Core BEAM - Infrastructure Layer
+defmodule Cerebelum.Infrastructure.DLQ do
+  def handle_failed_task(task, error, attempts) do
+    if attempts >= 3 do
+      # Move to DLQ after 3 failures
+      EventStore.emit(%DLQEvent{
+        task_id: task.id,
+        execution_id: task.execution_id,
+        error: error,
+        attempts: attempts,
+        timestamp: DateTime.utc_now()
+      })
+
+      # Notify monitoring
+      Metrics.increment("dlq.tasks", 1)
+      Alert.send_to_oncall("Task #{task.id} moved to DLQ after #{attempts} attempts")
+    else
+      # Retry with exponential backoff
+      retry_task(task, delay: backoff_delay(attempts))
+    end
+  end
+
+  defp backoff_delay(attempts) do
+    # 1s, 2s, 4s, ...
+    :math.pow(2, attempts - 1) * 1000
+  end
+end
+```
+
+### Sticky Routing for Cache Locality
+
+**Problem:** If each step is executed by a different worker, no caching benefits.
+
+**Solution:** Core BEAM routes steps of the same execution to the same worker (when possible).
+
+```elixir
+defmodule Cerebelum.Infrastructure.TaskRouter do
+  @moduledoc """
+  Routes tasks to workers with sticky routing for cache locality.
+  """
+
+  def route_task(task, worker_pool) do
+    # Try to route to same worker that executed previous step
+    preferred_worker = get_execution_worker(task.execution_id)
+
+    case preferred_worker do
+      {:ok, worker_id} when worker_id in worker_pool ->
+        # Worker is still alive and available
+        assign_task(worker_id, task)
+
+      _ ->
+        # Worker unavailable, pick any idle worker
+        idle_worker = pick_idle_worker(worker_pool)
+        assign_task(idle_worker, task)
+        track_execution_worker(task.execution_id, idle_worker)
+    end
+  end
+
+  defp get_execution_worker(execution_id) do
+    # ETS lookup for fast routing
+    case :ets.lookup(:execution_worker_mapping, execution_id) do
+      [{^execution_id, worker_id}] -> {:ok, worker_id}
+      [] -> :not_found
+    end
+  end
+end
+```
+
+**Benefits:**
+- **Class/Module Loading**: Worker already has step functions loaded
+- **gRPC Connection Reuse**: Same stream for entire execution
+- **Memory Cache**: Workers can cache intermediate results
+- **Reduced Latency**: No worker switching overhead
+
+### Language-Specific SDK Examples
+
+**Kotlin SDK (Jetpack Compose Style):**
+```kotlin
+package com.cerebelum.sdk
+
+val orderFlow = workflow("order-flow") {
+    // Type-safe step definitions
+    val validate = step<OrderInput, Order>(::validateOrder) {
+        timeout = 5.seconds
+        retries = 3
+    }
+
+    val payment = step<Order, Payment>(::chargePayment) {
+        timeout = 30.seconds
+    }
+
+    val notify = step<Payment, Unit>(::sendNotification)
+    val manualReview = step<Order, ReviewResult>(::reviewManually)
+
+    // Timeline definition
+    timeline {
+        +validate
+        +payment
+        +notify
+    }
+
+    // Error handling with pattern matching
+    diverge(on = payment) {
+        pattern<PaymentError.Timeout> {
+            retry(maxAttempts = 3, delay = 2.seconds) then payment
+        }
+        pattern<PaymentError.InsufficientFunds> {
+            failed()
+        }
+        pattern<PaymentError.NetworkError> {
+            log("Network error, retrying") then retry(5) then payment
+        }
+    }
+
+    // Conditional branching
+    branch(on = validate) {
+        condition { it.amount > 10000 } then skipTo(manualReview)
+        condition { it.fraudScore > 0.9 } then backTo(validate)
+        otherwise { continue() }
+    }
+}
+
+// Step implementations
+fun validateOrder(input: OrderInput): Order {
+    require(input.amount > 0) { "Amount must be positive" }
+    return Order(input.id, input.amount, fraudScore = 0.1)
+}
+
+fun chargePayment(ctx: Context, order: Order): Payment {
+    return PaymentService.charge(order.amount)
+}
+
+fun sendNotification(ctx: Context, payment: Payment) {
+    NotificationService.send(payment.receiptUrl)
+}
+
+// Execution
+fun main() {
+    // Local Mode
+    val localExecutor = LocalExecutor()
+    val result = localExecutor.execute(orderFlow, OrderInput("123", 100.0))
+    println("Result: $result")
+
+    // Distributed Mode
+    val distExecutor = DistributedExecutor(
+        coreUrl = "grpc://cerebelum.prod:9090",
+        workerId = "kt-worker-${UUID.randomUUID()}",
+        poolSize = 10
+    )
+    val result2 = distExecutor.execute(orderFlow, OrderInput("456", 5000.0))
+    println("Result: $result2")
+}
+```
+
+**TypeScript SDK (Builder Pattern):**
+```typescript
+import { workflow, LocalExecutor, DistributedExecutor, Context } from '@cerebelum/sdk';
+
+const orderFlow = workflow({
+  id: "order-flow",
+  steps: {
+    validateOrder: (input: OrderInput): Order => {
+      if (input.amount <= 0) throw new Error("Amount must be positive");
+      return { id: input.id, amount: input.amount, fraudScore: 0.1 };
+    },
+
+    chargePayment: async (ctx: Context, order: Order): Promise<Payment> => {
+      return await PaymentService.charge(order.amount);
+    },
+
+    sendNotification: async (ctx: Context, payment: Payment): Promise<void> => {
+      await NotificationService.send(payment.receiptUrl);
+    },
+
+    reviewManually: async (ctx: Context, order: Order): Promise<ReviewResult> => {
+      return await ReviewService.submit(order);
+    }
+  },
+
+  timeline: ["validateOrder", "chargePayment", "sendNotification"],
+
+  diverge: {
+    chargePayment: [
+      {
+        pattern: { type: "timeout" },
+        action: retry({ maxAttempts: 3, delay: 2000 })
+      },
+      {
+        pattern: { type: "insufficient_funds" },
+        action: failed()
+      }
+    ]
+  },
+
+  branch: {
+    validateOrder: [
+      {
+        condition: (order) => order.amount > 10000,
+        action: skipTo("reviewManually")
+      },
+      {
+        condition: (order) => order.fraudScore > 0.9,
+        action: backTo("validateOrder")
+      }
+    ]
+  }
+});
+
+// Execution
+async function main() {
+  // Local Mode
+  const localExecutor = new LocalExecutor();
+  const result = await localExecutor.execute(orderFlow, { id: "123", amount: 100 });
+  console.log("Result:", result);
+
+  // Distributed Mode
+  const distExecutor = new DistributedExecutor({
+    coreUrl: "grpc://cerebelum.prod:9090",
+    workerId: `ts-worker-${crypto.randomUUID()}`,
+    poolSize: 10
+  });
+  const result2 = await distExecutor.execute(orderFlow, { id: "456", amount: 5000 });
+  console.log("Result:", result2);
+}
+```
+
+**Python SDK (Context Managers):**
+```python
+from cerebelum_sdk import WorkflowBuilder, LocalExecutor, DistributedExecutor, Context
+from dataclasses import dataclass
+
+@dataclass
+class OrderInput:
+    id: str
+    amount: float
+
+@dataclass
+class Order:
+    id: str
+    amount: float
+    fraud_score: float
+
+order_flow = WorkflowBuilder("order-flow")
+
+# Step definitions
+def validate_order(input: OrderInput) -> Order:
+    if input.amount <= 0:
+        raise ValueError("Amount must be positive")
+    return Order(id=input.id, amount=input.amount, fraud_score=0.1)
+
+async def charge_payment(ctx: Context, order: Order) -> Payment:
+    return await PaymentService.charge(order.amount)
+
+async def send_notification(ctx: Context, payment: Payment) -> None:
+    await NotificationService.send(payment.receipt_url)
+
+# Build workflow
+with order_flow.timeline() as tl:
+    tl.step(validate_order)
+    tl.step(charge_payment)
+    tl.step(send_notification)
+
+with order_flow.diverge(on=charge_payment) as div:
+    div.pattern(PaymentError.Timeout).then(retry(max_attempts=3, delay=2000))
+    div.pattern(PaymentError.InsufficientFunds).then(failed())
+
+with order_flow.branch(on=validate_order) as br:
+    br.condition(lambda order: order.amount > 10000).then(skip_to(review_manually))
+    br.condition(lambda order: order.fraud_score > 0.9).then(back_to(validate_order))
+
+# Execution
+if __name__ == "__main__":
+    # Local Mode
+    local_executor = LocalExecutor()
+    result = local_executor.execute(order_flow, OrderInput("123", 100.0))
+    print(f"Result: {result}")
+
+    # Distributed Mode
+    dist_executor = DistributedExecutor(
+        core_url="grpc://cerebelum.prod:9090",
+        worker_id=f"py-worker-{uuid.uuid4()}",
+        pool_size=10
+    )
+    result2 = dist_executor.execute(order_flow, OrderInput("456", 5000.0))
+    print(f"Result: {result2}")
+```
+
+### SDK Generator for New Languages
+
+To accelerate SDK development for Priority 3 languages (Swift, Rust, Ruby, etc.), a code generator creates 70% of the boilerplate:
+
+```bash
+$ cerebelum-cli generate-sdk --language=swift --output=./cerebelum-sdk-swift
+
+Generating Swift SDK...
+✅ Created project structure
+✅ Generated gRPC stubs from worker_service.proto
+✅ Created Blueprint serializer
+✅ Created LocalExecutor skeleton
+✅ Created DistributedExecutor skeleton
+✅ Created example workflows
+✅ Created test templates
+
+Next steps:
+1. Implement language-specific DSL syntax (SwiftUI ResultBuilder style)
+2. Add Swift-specific type safety (generics with associated types)
+3. Implement Swift-idiomatic error handling (Result<T,E>)
+4. Write unit tests
+5. Run certification test suite: cerebelum-cli certify-sdk ./cerebelum-sdk-swift
+```
+
+**Generated File Structure:**
+```
+cerebelum-sdk-swift/
+├── Sources/
+│   ├── CerebelumSDK/
+│   │   ├── Workflow/
+│   │   │   ├── WorkflowBuilder.swift       [TO IMPLEMENT]
+│   │   │   ├── StepRef.swift               [TO IMPLEMENT]
+│   │   │   └── Blueprint.swift             [✅ Generated]
+│   │   ├── Executor/
+│   │   │   ├── LocalExecutor.swift         [✅ Skeleton]
+│   │   │   └── DistributedExecutor.swift   [✅ Skeleton]
+│   │   ├── GRPC/
+│   │   │   ├── WorkerServiceClient.swift   [✅ Generated from proto]
+│   │   │   └── Worker.swift                [✅ Generated]
+│   │   └── Serialization/
+│   │       ├── JSONSerializer.swift        [✅ Generated]
+│   │       └── ProtobufSerializer.swift    [✅ Generated]
+│   └── Examples/
+│       └── OrderProcessing.swift           [✅ Template]
+├── Tests/
+│   └── CerebelumSDKTests/                  [✅ Test templates]
+└── Package.swift                           [✅ Generated]
+```
+
+### Integration with Core BEAM
+
+**How SDKs Integrate:**
+
+1. **Workflow Registration:**
+   ```
+   SDK -> Core: SubmitBlueprint(Blueprint JSON)
+   Core: Validates structure, references, cycles
+   Core -> SDK: BlueprintValidation(id, version, errors=[])
+   Core: Stores blueprint in database
+   ```
+
+2. **Worker Registration:**
+   ```
+   SDK Worker -> Core: Register(worker_id, language="kotlin", capabilities=[])
+   Core: Adds worker to pool, starts health monitoring
+   Core -> SDK Worker: RegisterResponse(heartbeat_interval, task_timeout)
+   ```
+
+3. **Execution Request:**
+   ```
+   SDK Client -> Core: ExecuteWorkflow(workflow_id, input_data)
+   Core: Creates execution record, emits ExecutionStarted event
+   Core -> SDK Client: ExecutionHandle(execution_id)
+   ```
+
+4. **Task Distribution:**
+   ```
+   SDK Worker: PollForTask(worker_id, timeout=30s) [Long-polling]
+   Core: Assigns next task from execution queue
+   Core -> SDK Worker: Task(execution_id, step_name, input_data)
+   ```
+
+5. **Task Execution:**
+   ```
+   SDK Worker: Executes step function locally
+   SDK Worker -> Core: SubmitResult(task_id, success_data)
+   Core: Emits StepCompleted event, updates execution state
+   Core: Schedules next task in timeline
+   ```
+
+6. **Completion:**
+   ```
+   Core: Last step completes
+   Core: Emits ExecutionCompleted event
+   Core: Updates execution status in database
+   SDK Client: Can query result via GetExecutionStatus
+   ```
+
+**Sequence Diagram:**
+```mermaid
+sequenceDiagram
+    participant Client as SDK Client
+    participant Worker as SDK Worker
+    participant Core as Core BEAM
+    participant DB as PostgreSQL
+
+    Note over Client,DB: Registration Phase
+    Worker->>Core: Register(worker_id, language="kotlin")
+    Core->>DB: Store worker metadata
+    Core-->>Worker: RegisterResponse(heartbeat=10s)
+
+    Note over Client,DB: Execution Phase
+    Client->>Core: ExecuteWorkflow(workflow_id, input)
+    Core->>DB: Create execution record
+    Core->>DB: Emit ExecutionStarted event
+    Core-->>Client: ExecutionHandle(execution_id)
+
+    loop For each step in timeline
+        Worker->>Core: PollForTask(worker_id, timeout=30s)
+        Core-->>Worker: Task(execution_id, step_name, input_data)
+        Worker->>Worker: Execute step function
+        Worker->>Core: SubmitResult(task_id, success_data)
+        Core->>DB: Emit StepCompleted event
+        Core->>DB: Update execution state
+    end
+
+    Core->>DB: Emit ExecutionCompleted event
+    Client->>Core: GetExecutionStatus(execution_id)
+    Core-->>Client: ExecutionResult(status=COMPLETED, output)
+```
+
+### Performance Targets by Mode
+
+**Local Mode:**
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Overhead vs direct call | <5% | 1.05ms vs 1.00ms per step |
+| Startup time | <10ms | Time to first step execution |
+| Memory overhead | <5MB | Executor + workflow definition |
+| Max throughput | >10K workflows/sec | Single process |
+
+**Distributed Mode:**
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| gRPC roundtrip | <10ms | Worker -> Core -> Worker |
+| Task assignment latency | <20ms | Poll -> Task received |
+| Worker throughput | >1K workflows/sec | Per worker |
+| Cluster throughput | >1M workflows/sec | 100 nodes |
+| P99 latency | <150ms | End-to-end execution |
+| Worker startup | <2s | Registration + first task |
+
+### Summary: Multi-Language SDK Support
+
+**✅ Dual-Mode Architecture**: Same code works in Local (dev) and Distributed (prod) modes
+**✅ Native Syntax**: Kotlin uses Compose-style, TypeScript uses builders, Python uses context managers
+**✅ Type Safety**: Compile-time verification using generics, phantom types, and language-specific features
+**✅ gRPC Protocol**: Worker registration, heartbeat, pull-based task distribution
+**✅ Blueprint Serialization**: Workflow definitions compiled to JSON and validated by Core
+**✅ Serialization Options**: JSON (default, zero-config) + Protobuf (opt-in, 3x faster)
+**✅ Fault Tolerance**: Heartbeat monitoring, task timeout, retry with exponential backoff, DLQ
+**✅ Sticky Routing**: Tasks of same execution routed to same worker for cache locality
+**✅ SDK Generator**: Automates 70% of SDK development for new languages
+**✅ Priority Roadmap**: P1 (Kotlin, TypeScript), P2 (Python, Go), P3 (Swift, Rust, Ruby, PHP, C#)
+
+---
+
 ## Summary
 
 This design document provides a **code-first workflow orchestration system** with:
@@ -2429,13 +3362,36 @@ This design document provides a **code-first workflow orchestration system** wit
 defmodule MyApp.ProcessOrder do
   use Cerebelum.Workflow
 
-  def start(input), do: {:ok, input}
-  def validate(state), do: {:ok, state}
-  def charge(state), do: PaymentService.charge(state)
+  workflow() do
+    timeline() do
+      start()
+      |> validate()
+      |> charge()
+      |> done()
+    end
 
-  workflow do
-    edge &start/1 -> &validate/1
-    edge &validate/1 -> &charge/1, when: {:ok, _}
+    diverge(validate) do
+      :invalid_data -> notify_customer() |> failed()
+      :api_error -> retry(3, delay: 2000) |> validate()
+    end
+
+    diverge(charge) do
+      :payment_failed -> handle_payment_failure() |> failed()
+      :insufficient_funds -> request_alternative_payment()
+    end
+  end
+
+  def start(input), do: input
+
+  def validate(ctx, %{start: state}) do
+    case OrderValidator.validate(state) do
+      :ok -> state
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  def charge(ctx, %{validate: state}) do
+    PaymentService.charge(state)
   end
 end
 

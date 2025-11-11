@@ -53,6 +53,53 @@ Cómo escribir workflows con código Elixir:
 - Testing workflows
 - Debugging y time-travel
 
+---
+
+## Serie: Implementación Práctica (Hands-On)
+
+Tutoriales donde **TÚ construyes** Cerebelum paso a paso.
+
+### 6. [Construyendo el DSL - Parte 1](06-building-the-dsl-part-1.md)
+**Tiempo estimado:** 45 minutos
+
+Implementa el macro `workflow()` desde cero:
+- El macro `__using__/1`
+- Module attributes para metadata
+- Parser de `timeline()`
+- Validación en compile-time
+
+### 7. Construyendo el DSL - Parte 2 *(Próximamente)*
+**Tiempo estimado:** 50 minutos
+
+Implementa `diverge()` y `branch()`:
+- Parser de patrones de error
+- Conditional branching
+- Retry policies
+
+### 8. Execution Engine Básico *(Próximamente)*
+**Tiempo estimado:** 60 minutos
+
+Implementa el ejecutor de workflows:
+- GenServer para ejecutar workflows
+- Context management
+- Results cache
+
+### 9. Event Sourcing Engine *(Próximamente)*
+**Tiempo estimado:** 50 minutos
+
+Implementa persistencia de eventos:
+- Event Store con Ecto
+- Replay de workflows
+- Snapshots
+
+### 10. Time-Travel Debugging *(Próximamente)*
+**Tiempo estimado:** 40 minutos
+
+Implementa debugging avanzado:
+- Step-by-step execution
+- State inspection
+- Breakpoints
+
 ## Orden recomendado
 
 **Para principiantes en Elixir:**
@@ -63,6 +110,12 @@ Cómo escribir workflows con código Elixir:
 
 **Si solo quieres escribir workflows:**
 5 (y lee 4 cuando tengas problemas de fallos)
+
+**Para implementar Cerebelum tú mismo (Hands-On):**
+1 → 2 → 3 → 4 → 5 → **6 → 7 → 8 → 9 → 10**
+
+**Si quieres saltar directo a la implementación:**
+5 → **6 → 7 → 8 → 9 → 10**
 
 ## Recursos adicionales
 

@@ -29,7 +29,7 @@ Subworkflows:
 
 ---
 
-## Implementation with Improved DSL
+## Implementation with Final Syntax
 
 ### Main Workflow
 
@@ -48,93 +48,98 @@ defmodule LoanApplication do
   - LLM integration
   """
 
-  # Timeline - main flow
-  flow :start,
-       :validate_application,
-       :parallel_risk_analysis,
-       :consensus_decision,
-       :final_review,
-       :generate_report,
-       :done
+  workflow() do
+    timeline() do
+      start()
+      |> validate_application()
+      |> parallel_risk_analysis()
+      |> consensus_decision()
+      |> final_review()
+      |> generate_report()
+      |> done()
+    end
 
-  # Error handling for external API calls
-  on_error :validate_application do
-    :api_timeout, retry: 3, delay: 2000 -> :validate_application
-    :invalid_data -> cancel("Invalid application data") |> :failed
-  end
+    # Error handling for external API calls
+    diverge(validate_application) do
+      :api_timeout -> retry(3, delay: 2000) |> validate_application()
+      :invalid_data -> cancel("Invalid application data") |> failed()
+    end
 
-  on_error :parallel_risk_analysis do
-    :agent_timeout -> use_partial_results() |> :consensus_decision
-    :all_agents_failed -> :failed
-  end
+    diverge(parallel_risk_analysis) do
+      :agent_timeout -> use_partial_results() |> consensus_decision()
+      :all_agents_failed -> failed()
+    end
 
-  # Branching based on risk level
-  when_match :consensus_decision do
-    risk_level == :high and amount > 100_000 ->
-      escalate_to_committee() |> :generate_report
+    # Branching based on risk level
+    branch(consensus_decision) do
+      risk_level == :high and amount > 100_000 ->
+        escalate_to_committee() |> generate_report()
 
-    risk_level == :high ->
-      manual_review() |> :final_review
+      risk_level == :high ->
+        manual_review() |> final_review()
 
-    risk_level == :medium ->
-      automated_review() |> :final_review
+      risk_level == :medium ->
+        automated_review() |> final_review()
 
-    # Low risk - skip review
-    risk_level == :low ->
-      :generate_report
-  end
+      # Low risk - skip review
+      risk_level == :low ->
+        generate_report()
+    end
 
-  when_match :final_review do
-    approved? -> :generate_report
-    needs_more_info? -> request_documents() |> :validate_application
-    else -> :failed
+    branch(final_review) do
+      approved? -> generate_report()
+      needs_more_info? -> request_documents() |> validate_application()
+      else -> failed()
+    end
   end
 
   # ============================================================================
   # Steps
   # ============================================================================
 
-  step validate_application(ctx) do
+  def validate_application(ctx) do
     # Fetch application data
     application = Repo.get!(Application, ctx.application_id)
 
     # Validate required fields
     case validate_required_fields(application) do
       :ok ->
-        ok(%{
+        %{
           application: application,
           applicant: application.applicant,
           loan_amount: application.amount,
           loan_type: application.type
-        })
+        }
 
       {:error, reason} ->
         error(reason)
     end
   end
 
-  step parallel_risk_analysis(%{validate_application: data}) do
+  def parallel_risk_analysis(ctx, %{validate_application: data}) do
     # Run 3 agents in parallel - they will communicate via messages
-    parallel [
-      {CreditScoreAgent, %{
-        applicant_id: data.applicant.id,
-        loan_amount: data.loan_amount
-      }},
-      {FinancialAnalysisAgent, %{
-        applicant_id: data.applicant.id,
-        documents: data.application.documents
-      }},
-      {FraudDetectionAgent, %{
-        applicant: data.applicant,
-        application: data.application
-      }}
-    ],
-      timeout: 120_000,
-      on_failure: :continue,
-      min_successes: 2
+    parallel() do
+      agents [
+        {CreditScoreAgent, %{
+          applicant_id: data.applicant.id,
+          loan_amount: data.loan_amount
+        }},
+        {FinancialAnalysisAgent, %{
+          applicant_id: data.applicant.id,
+          documents: data.application.documents
+        }},
+        {FraudDetectionAgent, %{
+          applicant: data.applicant,
+          application: data.application
+        }}
+      ]
+      timeout 120_000
+      on_failure :continue
+      min_successes 2
+    end
   end
 
-  step consensus_decision(%{parallel_risk_analysis: agents}) do
+  def consensus_decision(ctx, %{parallel_risk_analysis: agents}) do
     # Extract results from each agent
     credit_result = agents[CreditScoreAgent]
     financial_result = agents[FinancialAnalysisAgent]
@@ -155,7 +160,7 @@ defmodule LoanApplication do
       true -> :low
     end
 
-    ok(%{
+    %{
       risk_level: risk_level,
       risk_score: average_risk,
       details: %{
@@ -163,10 +168,10 @@ defmodule LoanApplication do
         financial: financial_result,
         fraud: fraud_result
       }
-    })
+    }
   end
 
-  step final_review(ctx, %{consensus_decision: decision}) do
+  def final_review(ctx, %{consensus_decision: decision}) do
     # Use LLM (Cortex) for final review
     prompt = """
     Review this loan application:
@@ -189,20 +194,20 @@ defmodule LoanApplication do
     ], model: "gpt-4") do
       {:ok, response} ->
         decision = extract_decision(response.content)
-        ok(%{
+        %{
           approved: decision.approved,
           reasoning: decision.reasoning,
           conditions: decision.conditions
-        })
+        }
 
       {:error, reason} ->
         error(reason)
     end
   end
 
-  step generate_report(%{consensus_decision: decision, final_review: review}) do
+  def generate_report(ctx, %{consensus_decision: decision, final_review: review}) do
     report = %Report{
-      application_id: context.application_id,
+      application_id: ctx.application_id,
       risk_level: decision.risk_level,
       risk_score: decision.risk_score,
       approved: review.approved,
@@ -212,7 +217,7 @@ defmodule LoanApplication do
     }
 
     Repo.insert!(report)
-    ok(report)
+    report
   end
 
   # Helper functions
@@ -243,78 +248,82 @@ defmodule CreditScoreAgent do
   Listens for flags from FraudDetectionAgent.
   """
 
-  flow :start,
-       :fetch_credit_score,
-       :analyze_credit,
-       :broadcast_results,
-       :listen_for_flags,
-       :finalize,
-       :done
-
-  step fetch_credit_score(ctx) do
-    # Call external credit bureau API
-    case CreditBureau.get_score(ctx.applicant_id) do
-      {:ok, score} ->
-        ok(%{
-          score: score,
-          history: score.payment_history,
-          utilization: score.credit_utilization
-        })
-
-      {:error, :not_found} ->
-        ok(%{score: nil, history: [], utilization: 0})
+  workflow() do
+    timeline() do
+      start()
+      |> fetch_credit_score()
+      |> analyze_credit()
+      |> broadcast_results()
+      |> listen_for_flags()
+      |> finalize()
+      |> done()
     end
   end
 
-  step analyze_credit(%{fetch_credit_score: credit}) do
+  def fetch_credit_score(ctx) do
+    # Call external credit bureau API
+    case CreditBureau.get_score(ctx.applicant_id) do
+      {:ok, score} ->
+        %{
+          score: score,
+          history: score.payment_history,
+          utilization: score.credit_utilization
+        }
+
+      {:error, :not_found} ->
+        %{score: nil, history: [], utilization: 0}
+    end
+  end
+
+  def analyze_credit(ctx, %{fetch_credit_score: credit}) do
     risk_score = calculate_credit_risk(credit)
 
-    analysis = %{
+    %{
       score: credit.score,
       risk_score: risk_score,
       factors: analyze_risk_factors(credit),
       recommendation: get_recommendation(risk_score)
     }
-
-    ok(analysis)
   end
 
-  step broadcast_results(%{analyze_credit: analysis}) do
+  def broadcast_results(ctx, %{analyze_credit: analysis}) do
     # Broadcast to other agents in parallel group
-    broadcast :credit_analysis_complete, %{
-      agent: CreditScoreAgent,
-      risk_score: analysis.risk_score,
-      score: analysis.score,
-      recommendation: analysis.recommendation
-    }
+    broadcast(:credit_analysis_complete) do
+      %{
+        agent: CreditScoreAgent,
+        risk_score: analysis.risk_score,
+        score: analysis.score,
+        recommendation: analysis.recommendation
+      }
+    end
 
-    ok(analysis)
+    analysis
   end
 
-  step listen_for_flags(%{analyze_credit: analysis}) do
+  def listen_for_flags(ctx, %{analyze_credit: analysis}) do
     # Wait for fraud agent (optional - timeout is OK)
-    case await FraudDetectionAgent, :fraud_alert, timeout: 10_000 do
-      {:ok, %{fraud_detected: true}} ->
+    await(FraudDetectionAgent, :fraud_alert) do
+      timeout 10_000
+      on_match %{fraud_detected: true} ->
         # Adjust risk if fraud detected
-        adjusted = %{analysis |
+        %{analysis |
           risk_score: 1.0,
           recommendation: :reject,
           fraud_flagged: true
         }
-        ok(adjusted)
 
-      {:ok, %{fraud_detected: false}} ->
-        ok(Map.put(analysis, :fraud_flagged, false))
+      on_match %{fraud_detected: false} ->
+        Map.put(analysis, :fraud_flagged, false)
 
-      {:timeout, _} ->
+      on_timeout ->
         # No fraud alert = proceed normally
-        ok(Map.put(analysis, :fraud_flagged, false))
+        Map.put(analysis, :fraud_flagged, false)
     end
   end
 
-  step finalize(%{listen_for_flags: final_analysis}) do
+  def finalize(ctx, %{listen_for_flags: final_analysis}) do
     # Final result for parent workflow
-    ok(final_analysis)
+    final_analysis
   end
 
   # Helper functions
@@ -343,58 +352,63 @@ defmodule FinancialAnalysisAgent do
   Waits for credit analysis from CreditScoreAgent.
   """
 
-  flow :start,
-       :verify_documents,
-       :analyze_income,
-       :wait_for_credit,
-       :calculate_dti,
-       :broadcast_results,
-       :done
+  workflow() do
+    timeline() do
+      start()
+      |> verify_documents()
+      |> analyze_income()
+      |> wait_for_credit()
+      |> calculate_dti()
+      |> broadcast_results()
+      |> done()
+    end
 
-  on_error :verify_documents do
-    :verification_failed, retry: 2 -> :verify_documents
-    :documents_invalid -> early_reject() |> :done
+    diverge(verify_documents) do
+      :verification_failed -> retry(2) |> verify_documents()
+      :documents_invalid -> early_reject() |> done()
+    end
   end
 
-  step verify_documents(ctx) do
+  def verify_documents(ctx) do
     # Execute subworkflow for document verification
-    execute_subworkflow(DocumentVerification, %{
-      documents: ctx.documents,
-      applicant_id: ctx.applicant_id
-    })
+    subworkflow(DocumentVerification) do
+      input %{
+        documents: ctx.documents,
+        applicant_id: ctx.applicant_id
+      }
+    end
   end
 
-  step analyze_income(ctx, %{verify_documents: verified_docs}) do
+  def analyze_income(ctx, %{verify_documents: verified_docs}) do
     # Analyze income from verified documents
-    income_analysis = %{
+    %{
       monthly_income: verified_docs.income,
       employment_status: verified_docs.employment_status,
       income_stability: calculate_stability(verified_docs.income_history),
       verified: true
     }
-
-    ok(income_analysis)
   end
 
-  step wait_for_credit(%{analyze_income: income}) do
+  def wait_for_credit(ctx, %{analyze_income: income}) do
     # Wait for credit analysis from CreditScoreAgent
-    case await CreditScoreAgent, :credit_analysis_complete, timeout: 30_000 do
-      {:ok, credit_data} ->
-        ok(%{
+    await(CreditScoreAgent, :credit_analysis_complete) do
+      timeout 30_000
+      on_match credit_data ->
+        %{
           income: income,
           credit: credit_data
-        })
+        }
 
-      {:timeout, _} ->
+      on_timeout ->
         # Proceed without credit data
-        ok(%{
+        %{
           income: income,
           credit: nil
-        })
+        }
     end
   end
 
-  step calculate_dti(ctx, %{wait_for_credit: data}) do
+  def calculate_dti(ctx, %{wait_for_credit: data}) do
     # Calculate Debt-to-Income ratio
     monthly_debt = ctx.loan_amount / 360  # 30-year loan
     monthly_income = data.income.monthly_income
@@ -408,7 +422,7 @@ defmodule FinancialAnalysisAgent do
       true -> 0.95             # Very high risk
     end
 
-    analysis = %{
+    %{
       dti_ratio: dti_ratio,
       monthly_income: monthly_income,
       monthly_debt: monthly_debt,
@@ -416,20 +430,20 @@ defmodule FinancialAnalysisAgent do
       status: get_status(dti_ratio),
       credit_score: data.credit && data.credit.score
     }
-
-    ok(analysis)
   end
 
-  step broadcast_results(%{calculate_dti: analysis}) do
+  def broadcast_results(ctx, %{calculate_dti: analysis}) do
     # Broadcast to other agents
-    broadcast :financial_analysis_complete, %{
-      agent: FinancialAnalysisAgent,
-      dti_ratio: analysis.dti_ratio,
-      risk_score: analysis.risk_score,
-      status: analysis.status
-    }
+    broadcast(:financial_analysis_complete) do
+      %{
+        agent: FinancialAnalysisAgent,
+        dti_ratio: analysis.dti_ratio,
+        risk_score: analysis.risk_score,
+        status: analysis.status
+      }
+    end
 
-    ok(analysis)
+    analysis
   end
 
   # Helpers
@@ -466,23 +480,29 @@ defmodule FraudDetectionAgent do
   Broadcasts alerts to other agents if fraud detected.
   """
 
-  flow :start,
-       :run_fraud_checks,
-       :analyze_patterns,
-       :check_with_peers,
-       :make_decision,
-       :broadcast_alert,
-       :done
-
-  step run_fraud_checks(ctx) do
-    # Execute fraud check subworkflow
-    execute_subworkflow(FraudCheck, %{
-      applicant: ctx.applicant,
-      application: ctx.application
-    })
+  workflow() do
+    timeline() do
+      start()
+      |> run_fraud_checks()
+      |> analyze_patterns()
+      |> check_with_peers()
+      |> make_decision()
+      |> broadcast_alert()
+      |> done()
+    end
   end
 
-  step analyze_patterns(%{run_fraud_checks: fraud_data}) do
+  def run_fraud_checks(ctx) do
+    # Execute fraud check subworkflow
+    subworkflow(FraudCheck) do
+      input %{
+        applicant: ctx.applicant,
+        application: ctx.application
+      }
+    end
+  end
+
+  def analyze_patterns(ctx, %{run_fraud_checks: fraud_data}) do
     # Use ML model to detect fraud patterns
     patterns = MLModel.predict_fraud(%{
       identity_verification: fraud_data.identity_score,
@@ -493,15 +513,15 @@ defmodule FraudDetectionAgent do
 
     fraud_score = patterns.probability
 
-    ok(%{
+    %{
       fraud_score: fraud_score,
       patterns: patterns.detected_patterns,
       confidence: patterns.confidence,
       raw_data: fraud_data
-    })
+    }
   end
 
-  step check_with_peers(%{analyze_patterns: analysis}) do
+  def check_with_peers(ctx, %{analyze_patterns: analysis}) do
     # Wait for other agents' opinions
     # Collect messages for 5 seconds (non-blocking)
     messages = receive_from_peers(timeout: 5_000)
@@ -523,16 +543,16 @@ defmodule FraudDetectionAgent do
       analysis.fraud_score
     end
 
-    ok(%{analysis |
+    %{analysis |
       fraud_score: adjusted_score,
       peer_opinions: peer_opinions
-    })
+    }
   end
 
-  step make_decision(%{check_with_peers: analysis}) do
+  def make_decision(ctx, %{check_with_peers: analysis}) do
     fraud_detected = analysis.fraud_score > 0.75
 
-    decision = %{
+    %{
       fraud_detected: fraud_detected,
       fraud_score: analysis.fraud_score,
       risk_score: if(fraud_detected, do: 1.0, else: analysis.fraud_score),
@@ -540,30 +560,34 @@ defmodule FraudDetectionAgent do
       confidence: analysis.confidence,
       recommendation: if(fraud_detected, do: :reject, else: :proceed)
     }
-
-    ok(decision)
   end
 
-  step broadcast_alert(%{make_decision: decision}) do
+  def broadcast_alert(ctx, %{make_decision: decision}) do
     # Alert ALL agents if fraud detected
     if decision.fraud_detected do
-      broadcast :fraud_alert, %{
-        fraud_detected: true,
-        fraud_score: decision.fraud_score,
-        patterns: decision.patterns,
-        agent: FraudDetectionAgent
-      }
+      broadcast(:fraud_alert) do
+        %{
+          fraud_detected: true,
+          fraud_score: decision.fraud_score,
+          patterns: decision.patterns,
+          agent: FraudDetectionAgent
+        }
+      end
 
       # Also send directly to CreditScoreAgent
-      send_to CreditScoreAgent, :fraud_alert, %{
-        fraud_detected: true,
-        fraud_score: decision.fraud_score
-      }
+      send_to(CreditScoreAgent, :fraud_alert) do
+        %{
+          fraud_detected: true,
+          fraud_score: decision.fraud_score
+        }
+      end
     else
-      broadcast :fraud_alert, %{fraud_detected: false}
+      broadcast(:fraud_alert) do
+        %{fraud_detected: false}
+      end
     end
 
-    ok(decision)
+    decision
   end
 end
 ```
@@ -581,19 +605,23 @@ defmodule DocumentVerification do
   Used by FinancialAnalysisAgent.
   """
 
-  flow :start,
-       :validate_formats,
-       :ocr_extraction,
-       :verify_authenticity,
-       :extract_data,
-       :done
+  workflow() do
+    timeline() do
+      start()
+      |> validate_formats()
+      |> ocr_extraction()
+      |> verify_authenticity()
+      |> extract_data()
+      |> done()
+    end
 
-  on_error :ocr_extraction do
-    :ocr_failed, retry: 2, delay: 3000 -> :ocr_extraction
-    :ocr_failed -> use_manual_review() |> :extract_data
+    diverge(ocr_extraction) do
+      :ocr_failed -> retry(2, delay: 3000) |> ocr_extraction()
+      :ocr_failed -> use_manual_review() |> extract_data()
+    end
   end
 
-  step validate_formats(ctx) do
+  def validate_formats(ctx) do
     # Check document formats
     valid_docs = Enum.filter(ctx.documents, fn doc ->
       doc.format in [:pdf, :jpg, :png] and doc.size < 10_000_000
@@ -602,11 +630,11 @@ defmodule DocumentVerification do
     if Enum.empty?(valid_docs) do
       error(:no_valid_documents)
     else
-      ok(%{documents: valid_docs})
+      %{documents: valid_docs}
     end
   end
 
-  step ocr_extraction(%{validate_formats: data}) do
+  def ocr_extraction(ctx, %{validate_formats: data}) do
     # Extract text from documents using OCR
     extracted = Enum.map(data.documents, fn doc ->
       case OCRService.extract(doc) do
@@ -615,31 +643,31 @@ defmodule DocumentVerification do
       end
     end)
 
-    ok(%{extracted: extracted})
+    %{extracted: extracted}
   end
 
-  step verify_authenticity(%{ocr_extraction: data}) do
+  def verify_authenticity(ctx, %{ocr_extraction: data}) do
     # Verify documents are authentic (not tampered)
     verifications = Enum.map(data.extracted, fn doc ->
       authenticity_score = AuthenticityChecker.verify(doc)
       %{doc | authenticity: authenticity_score}
     end)
 
-    ok(%{verified: verifications})
+    %{verified: verifications}
   end
 
-  step extract_data(%{verify_authenticity: data}) do
+  def extract_data(ctx, %{verify_authenticity: data}) do
     # Extract structured data (income, employment, etc)
     income = extract_income(data.verified)
     employment = extract_employment(data.verified)
     income_history = extract_income_history(data.verified)
 
-    ok(%{
+    %{
       income: income,
       employment_status: employment,
       income_history: income_history,
       documents_verified: true
-    })
+    }
   end
 
   # Helpers
@@ -672,14 +700,18 @@ defmodule FraudCheck do
   Used by FraudDetectionAgent.
   """
 
-  flow :start,
-       :identity_check,
-       :device_fingerprint,
-       :velocity_check,
-       :aggregate_signals,
-       :done
+  workflow() do
+    timeline() do
+      start()
+      |> identity_check()
+      |> device_fingerprint()
+      |> velocity_check()
+      |> aggregate_signals()
+      |> done()
+    end
+  end
 
-  step identity_check(ctx) do
+  def identity_check(ctx) do
     # Verify identity against government databases
     identity_score = IdentityVerification.verify(%{
       name: ctx.applicant.name,
@@ -687,14 +719,14 @@ defmodule FraudCheck do
       dob: ctx.applicant.date_of_birth
     })
 
-    ok(%{
+    %{
       identity_score: identity_score.match_score,
       identity_verified: identity_score.verified,
       flags: identity_score.flags
-    })
+    }
   end
 
-  step device_fingerprint(ctx) do
+  def device_fingerprint(ctx) do
     # Analyze device/browser fingerprint
     fingerprint = DeviceAnalyzer.analyze(%{
       ip_address: ctx.application.ip_address,
@@ -702,15 +734,15 @@ defmodule FraudCheck do
       browser_data: ctx.application.browser_data
     })
 
-    ok(%{
+    %{
       device_fingerprint: fingerprint.hash,
       device_risk: fingerprint.risk_score,
       is_proxy: fingerprint.is_proxy,
       is_bot: fingerprint.is_bot
-    })
+    }
   end
 
-  step velocity_check(ctx) do
+  def velocity_check(ctx) do
     # Check application velocity (how fast they filled it)
     time_taken = ctx.application.completion_time_seconds
 
@@ -722,19 +754,19 @@ defmodule FraudCheck do
       true -> 0.2
     end
 
-    ok(%{
+    %{
       application_speed: time_taken,
       velocity_risk: velocity_risk
-    })
+    }
   end
 
-  step aggregate_signals(%{
+  def aggregate_signals(ctx, %{
     identity_check: identity,
     device_fingerprint: device,
     velocity_check: velocity
   }) do
     # Combine all fraud signals
-    ok(%{
+    %{
       identity_score: identity.identity_score,
       device_fingerprint: device.device_fingerprint,
       application_speed: velocity.application_speed,
@@ -742,7 +774,7 @@ defmodule FraudCheck do
       overall_flags: identity.flags ++
                      (if device.is_bot, do: [:bot_detected], else: []) ++
                      (if velocity.velocity_risk > 0.7, do: [:velocity_high], else: [])
-    })
+    }
   end
 end
 ```
@@ -909,34 +941,46 @@ defmodule CreditScoreAgent do
 end
 ```
 
-### Agent with communication (After - Improved DSL)
+### Agent with communication (After - Final Syntax)
 
 ```elixir
 defmodule CreditScoreAgent do
   use Cerebelum.Workflow
 
-  flow :start, :fetch_credit_score, :analyze_credit,
-       :broadcast_results, :listen_for_flags, :finalize, :done
-
-  step broadcast_results(%{analyze_credit: analysis}) do
-    broadcast :credit_analysis_complete, %{
-      agent: CreditScoreAgent,
-      risk_score: analysis.risk_score,
-      score: analysis.score
-    }
-    ok(analysis)
+  workflow() do
+    timeline() do
+      start()
+      |> fetch_credit_score()
+      |> analyze_credit()
+      |> broadcast_results()
+      |> listen_for_flags()
+      |> finalize()
+      |> done()
+    end
   end
 
-  step listen_for_flags(%{analyze_credit: analysis}) do
-    case await FraudDetectionAgent, :fraud_alert, timeout: 10_000 do
-      {:ok, %{fraud_detected: true}} ->
-        ok(%{analysis | risk_score: 1.0, fraud_flagged: true})
+  def broadcast_results(ctx, %{analyze_credit: analysis}) do
+    broadcast(:credit_analysis_complete) do
+      %{
+        agent: CreditScoreAgent,
+        risk_score: analysis.risk_score,
+        score: analysis.score
+      }
+    end
+    analysis
+  end
 
-      {:ok, %{fraud_detected: false}} ->
-        ok(Map.put(analysis, :fraud_flagged, false))
+  def listen_for_flags(ctx, %{analyze_credit: analysis}) do
+    await(FraudDetectionAgent, :fraud_alert) do
+      timeout 10_000
+      on_match %{fraud_detected: true} ->
+        %{analysis | risk_score: 1.0, fraud_flagged: true}
 
-      {:timeout, _} ->
-        ok(Map.put(analysis, :fraud_flagged, false))
+      on_match %{fraud_detected: false} ->
+        Map.put(analysis, :fraud_flagged, false)
+
+      on_timeout ->
+        Map.put(analysis, :fraud_flagged, false)
     end
   end
 end

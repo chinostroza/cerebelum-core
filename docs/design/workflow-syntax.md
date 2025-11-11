@@ -1,77 +1,89 @@
 # Workflow Syntax Design - Code-First Approach
 
-**Status:** Draft - Final Syntax
-**Last Updated:** 2025-11-10
-**Context:** This document defines the final syntax for Cerebelum's code-first workflow DSL.
+**Status:** Final
+**Last Updated:** 2025-11-11
+**Style:** Compose-like (funciones componibles)
+**Context:** Este documento define la sintaxis final del DSL de Cerebelum, inspirado en Jetpack Compose de Kotlin.
 
 ---
 
-## Table of Contents
+## Tabla de Contenidos
 
-1. [Design Philosophy](#design-philosophy)
-2. [Core Syntax](#core-syntax)
+1. [Filosofía de Diseño](#filosofía-de-diseño)
+2. [Sintaxis Core](#sintaxis-core)
 3. [Timeline](#timeline)
-4. [Error Handling with Diverge](#error-handling-with-diverge)
-5. [Branching with Branch](#branching-with-branch)
-6. [Functions](#functions)
-7. [Parallel Execution](#parallel-execution)
-8. [Agent Communication](#agent-communication)
-9. [External Signals](#external-signals)
-10. [Subworkflows](#subworkflows)
-11. [Complete Examples](#complete-examples)
-12. [Syntax Reference](#syntax-reference)
+4. [Error Handling](#error-handling)
+5. [Branching](#branching)
+6. [Parallel Execution](#parallel-execution)
+7. [Agent Communication](#agent-communication)
+8. [External Signals](#external-signals)
+9. [Subworkflows](#subworkflows)
+10. [Ejemplos Completos](#ejemplos-completos)
+11. [Sintaxis Reference](#sintaxis-reference)
 
 ---
 
-## Design Philosophy
+## Filosofía de Diseño
 
-### Goals
+### Principio Fundamental
 
-1. **Code-First**: Workflows are pure Elixir modules, not JSON/YAML
-2. **Concise**: Minimal boilerplate, maximum clarity
-3. **Idiomatic Elixir**: Leverages pipes, pattern matching, atoms
-4. **Explicit over Magic**: Clear what's happening at each step
-5. **Scalable**: Built on BEAM/OTP for millions of concurrent workflows
+**Todas las palabras clave son funciones componibles** - inspirado en Jetpack Compose de Kotlin.
 
-### Principles
+```elixir
+workflow() do           # Función componible
+  timeline() do         # Función componible
+    start()            # Función
+    |> step1()         # Función
+    |> done()          # Función
+  end
+end
+```
 
-- ✅ Timeline shows happy path clearly
-- ✅ Atoms with `:` for values, without `:` for identifiers
-- ✅ Pattern matching for data flow
-- ✅ Retry strategies inspired by Ktor
-- ✅ Zero overhead for unused features
+### Objetivos
+
+1. **Compose-like**: Todo son funciones que se componen
+2. **Idiomático Elixir**: Usa `do...end`, pattern matching, pipes
+3. **Explícito**: `start()` y `done()` visibles
+4. **Type-safe**: Validación en compile-time via macros
+5. **Escalable**: Built on BEAM/OTP
+
+### Anti-Objetivos
+
+- ❌ No crear un lenguaje nuevo (nos quedamos en Elixir)
+- ❌ No usar `{}` para bloques (son tuplas en Elixir)
+- ❌ No keywords como `fun` (no existe en Elixir)
 
 ---
 
-## Core Syntax
+## Sintaxis Core
 
-### Quick Example
+### Ejemplo Rápido
 
 ```elixir
 defmodule PaymentWorkflow do
   use Cerebelum.Workflow
 
-  # Happy path - no start() or done()
-  timeline do
-    validate_payment()
-    |> process_payment()
-    |> send_receipt()
+  workflow() do
+    timeline() do
+      start()
+      |> validate_payment()
+      |> process_payment()
+      |> send_receipt()
+      |> done()
+    end
+
+    diverge(validate_payment) do
+      :timeout -> retry(3, delay: 2000) |> validate_payment()
+      :invalid_card -> notify_customer() |> failed()
+    end
+
+    branch(process_payment) do
+      amount > 10_000 -> request_approval()
+      amount <= 10_000 -> charge_payment()
+    end
   end
 
-  # Error handling with retry
-  diverge validate_payment do
-    :timeout -> retry(3, delay: 2000) |> validate_payment()
-    :invalid_card -> notify_customer() |> failed()
-  end
-
-  # Conditional branching
-  branch process_payment do
-    amount > 10_000 -> request_approval()
-    amount <= 10_000 -> charge_payment()
-  end
-
-  # Function definitions
-  fn validate_payment(ctx) do
+  def validate_payment(ctx) do
     case PaymentAPI.validate(ctx.card) do
       {:ok, data} -> data
       {:error, :timeout} -> error(:timeout)
@@ -84,85 +96,94 @@ end
 
 ## Timeline
 
-### Syntax
+### Sintaxis
 
 ```elixir
-timeline do
-  step1()
+timeline() do
+  start()
+  |> step1()
   |> step2()
   |> step3()
-  |> step4()
+  |> done()
 end
 ```
 
-### Rules
+### Reglas
 
-- **No `start()` or `done()`** - implicitly starts at first step, ends at last
-- **Uses pipe operator** `|>` for visual flow
-- **Steps are function names** without `:`
-- **Read top-to-bottom** as the happy path
+- **`start()` explícito** - Marca inicio del workflow
+- **`done()` explícito** - Marca fin exitoso
+- **Pipe operator `|>`** - Flujo visual de arriba hacia abajo
+- **Steps son funciones** - Sin `:` en el nombre
 
-### Examples
+### Ejemplos
 
 ```elixir
-# Simple workflow
-timeline do
-  load_data()
-  |> process_data()
-  |> save_results()
+# Timeline simple
+workflow() do
+  timeline() do
+    start()
+    |> load_data()
+    |> process_data()
+    |> save_results()
+    |> done()
+  end
 end
 
-# Complex workflow
-timeline do
-  validate_application()
-  |> verify_documents()
-  |> parallel_risk_analysis()
-  |> consensus_decision()
-  |> human_review()
-  |> generate_report()
-  |> notify_applicant()
+# Timeline complejo
+workflow() do
+  timeline() do
+    start()
+    |> validate_application()
+    |> verify_documents()
+    |> parallel_risk_analysis()
+    |> consensus_decision()
+    |> human_review()
+    |> generate_report()
+    |> notify_applicant()
+    |> done()
+  end
 end
 ```
 
 ---
 
-## Error Handling with Diverge
+## Error Handling
 
-### Syntax
+### Sintaxis
 
 ```elixir
-diverge step_name do
+diverge(step_name) do
   :error_type -> action()
   :error_type -> retry(...) |> action()
   :error_type -> step1() |> step2() |> action()
 end
 ```
 
-### Simple Retry
+### Retry Simple
 
 ```elixir
-diverge validate_payment do
-  # Retry with fixed delay
+diverge(validate_payment) do
+  # Retry con delay fijo
   :timeout -> retry(3, delay: 2000) |> validate_payment()
 
-  # Retry without delay
+  # Retry sin delay
   :transient_error -> retry(5) |> validate_payment()
 
-  # No retry - go to different step
+  # Sin retry - diferente destino
   :invalid_card -> notify_customer() |> failed()
 
-  # No retry - terminate
+  # Sin retry - termina
   :fraud_detected -> failed()
 end
 ```
 
-### Advanced Retry with Block
+### Retry Complejo (Ktor-style)
 
 ```elixir
-diverge fetch_data do
+diverge(fetch_data) do
   # Linear backoff - 3s, 6s, 9s, 12s, 15s
   :api_timeout ->
-    retry do
+    retry() do
       attempts 5
       delay fn attempt -> attempt * 3000 end
     end
@@ -170,17 +191,18 @@ diverge fetch_data do
 
   # Exponential backoff - 1s, 2s, 4s, 8s, 16s (max 30s)
   :rate_limited ->
-    retry do
+    retry() do
       attempts 10
       delay fn attempt -> round(:math.pow(2, attempt) * 1000) end
       max_delay 30_000
       backoff :exponential
     end
+    |> log_rate_limit()
     |> fetch_data()
 
-  # With jitter to avoid thundering herd
+  # Con jitter - evita thundering herd
   :service_busy ->
-    retry do
+    retry() do
       attempts 5
       delay 5000
       jitter 0.2  # ±20% random
@@ -189,18 +211,16 @@ diverge fetch_data do
 end
 ```
 
-### Retry with Intermediate Steps
+### Retry con Steps Intermedios
 
 ```elixir
-diverge process_payment do
-  # Execute steps before retrying
+diverge(process_payment) do
   :gateway_error ->
     retry(3, delay: 5000)
     |> log_retry()
     |> notify_admin()
     |> process_payment()
 
-  # Different path on error
   :insufficient_funds ->
     notify_customer()
     |> request_additional_payment()
@@ -208,49 +228,48 @@ diverge process_payment do
 end
 ```
 
-### Retry Configuration Options
+### Opciones de Retry
 
 ```elixir
 retry(
-  attempts,                          # Required: number of attempts
-  delay: ms | fn,                    # Fixed delay or function
-  backoff: :exponential | :linear,   # Backoff strategy
-  max_delay: ms,                     # Maximum delay
-  jitter: true | float               # Randomization
+  attempts,                          # Requerido: número de intentos
+  delay: ms | fn,                    # Delay fijo o función
+  backoff: :exponential | :linear,   # Estrategia de backoff
+  max_delay: ms,                     # Delay máximo
+  jitter: true | float               # Randomización ±%
 )
 
-# Examples:
+# Ejemplos:
 retry(3, delay: 2000)
 retry(5, delay: fn attempt -> attempt * 3000 end)
 retry(10, delay: 1000, backoff: :exponential, max_delay: 60_000)
-retry(5, delay: 5000, jitter: true)
 ```
 
 ---
 
-## Branching with Branch
+## Branching
 
-### Syntax
+### Sintaxis
 
 ```elixir
-branch step_name do
+branch(step_name) do
   condition1 -> destination1()
   condition2 -> destination2()
   condition3 -> destination3()
 end
 ```
 
-### Examples
+### Ejemplos
 
 ```elixir
-# Simple branching
-branch check_amount do
+# Branch simple
+branch(check_amount) do
   amount > 10_000 -> request_approval()
   amount <= 10_000 -> auto_approve()
 end
 
-# Complex conditions
-branch consensus_decision do
+# Branch complejo
+branch(consensus_decision) do
   risk_level == :critical -> cancelled()
   risk_level == :high and amount > 100_000 -> escalate_to_committee()
   risk_level == :high -> human_review()
@@ -259,145 +278,100 @@ branch consensus_decision do
   risk_level == :low -> generate_report()
 end
 
-# With intermediate steps
-branch verify_identity do
+# Branch con steps intermedios
+branch(verify_identity) do
   identity_verified and age >= 18 -> continue_application()
   identity_verified and age < 18 -> notify_guardian() |> request_approval()
   not identity_verified -> request_documents() |> verify_identity()
 end
 ```
 
-### Rules
+### Reglas de Naming en Branch
 
-- **Fields without `:`** - `risk_level`, `amount`, `status` are fields from previous step
-- **Values with `:`** - `:high`, `:low`, `:approved` are atom values
-- **Steps without `:`** - `escalate_committee`, `human_review` are function names
-
----
-
-## Functions
-
-### Syntax
-
-```elixir
-fn function_name(ctx) do
-  # body
-  result  # Auto-wrapped in {:ok, result}
-end
-
-fn function_name(ctx, deps) do
-  # Access previous results via pattern matching
-  result
-end
-```
-
-### Examples
-
-```elixir
-# Simple function
-fn validate_payment(ctx) do
-  PaymentAPI.validate(ctx.card_number)
-end
-
-# With dependencies
-fn process_payment(ctx, %{validate_payment: validated}) do
-  PaymentGateway.charge(validated.amount)
-end
-
-# Multiple dependencies
-fn match_transactions(ctx, %{
-  load_expected: expected,
-  fetch_movements: movements
-}) do
-  Matcher.match(expected, movements)
-end
-
-# With error handling
-fn fetch_credit_score(ctx) do
-  case CreditBureau.fetch(ctx.ssn) do
-    {:ok, score} -> score
-    {:error, :timeout} -> error(:bureau_timeout)
-    {:error, :not_found} -> error(:no_credit_history)
-  end
-end
-
-# Deep pattern matching
-fn analyze(ctx, %{
-  match_transactions: %{discrepancies: discreps},
-  fetch_movements: %{failed: failed_banks}
-}) do
-  DiscrepancyAnalyzer.analyze(discreps, failed_banks)
-end
-```
-
-### Helper Functions
-
-```elixir
-# Return error (triggers diverge)
-error(:error_type)
-
-# Return timeout
-timeout(%{reason: "took too long"})
-
-# Terminate workflow
-done()      # Success
-failed()    # Failure
-cancelled() # Cancelled
-```
+- **Campos sin `:`** - `risk_level`, `amount`, `status` (variables del step anterior)
+- **Valores con `:`** - `:high`, `:low`, `:approved` (átomos)
+- **Steps sin `:`** - `escalate_committee`, `human_review` (nombres de funciones)
 
 ---
 
 ## Parallel Execution
 
-### Syntax
+### Sintaxis
 
 ```elixir
-fn step_name(ctx, deps) do
-  parallel [
-    {Agent1, %{data: ...}},
-    {Agent2, %{data: ...}},
-    {Agent3, %{data: ...}}
-  ],
-  timeout: ms,
-  on_failure: :stop | :continue,
-  min_successes: n
+def step_name(ctx, deps) do
+  parallel() do
+    agents [
+      {Agent1, %{data: ...}},
+      {Agent2, %{data: ...}},
+      {Agent3, %{data: ...}}
+    ]
+    timeout ms
+    on_failure :stop | :continue
+    min_successes n
+  end
 end
 ```
 
-### Examples
+### Ejemplo
 
 ```elixir
-# Simple parallel execution
-fn parallel_risk_analysis(ctx, %{validate_application: data}) do
-  parallel [
-    {CreditScoreAgent, %{applicant_id: data.applicant.id}},
-    {FinancialAnalysisAgent, %{documents: data.documents}},
-    {FraudDetectionAgent, %{applicant: data.applicant}}
-  ], timeout: 120_000
+def parallel_risk_analysis(ctx, %{validate_application: data}) do
+  parallel() do
+    agents [
+      {CreditScoreAgent, %{applicant_id: data.applicant.id}},
+      {FinancialAnalysisAgent, %{documents: data.documents}},
+      {FraudDetectionAgent, %{applicant: data.applicant}}
+    ]
+    timeout 120_000
+    on_failure :continue
+    min_successes 2
+  end
 end
 
-# With error handling
-fn robust_analysis(ctx, deps) do
-  parallel [
-    {Agent1, %{data: deps.input}},
-    {Agent2, %{data: deps.input}},
-    {Agent3, %{data: deps.input}}
-  ],
-  timeout: 60_000,
-  on_failure: :continue,   # Don't fail if one fails
-  min_successes: 2         # Need at least 2 to succeed
-end
+def consolidate_results(ctx, %{parallel_risk_analysis: results}) do
+  # results es una lista con el resultado de cada agente:
+  # [
+  #   %{agent: CreditScoreAgent, risk_score: 0.3},
+  #   %{agent: FinancialAnalysisAgent, risk_score: 0.5},
+  #   %{agent: FraudDetectionAgent, risk_score: 0.2}
+  # ]
 
-# Access results
-fn consolidate_results(ctx, %{parallel_risk_analysis: results}) do
-  # results is a list of agent outputs
   scores = Enum.map(results, & &1.risk_score)
   avg_score = Enum.sum(scores) / length(scores)
 
-  %{
-    average_score: avg_score,
-    individual_scores: scores
-  }
+  %{average_risk: avg_score, individual_scores: scores}
+end
+```
+
+### Agentes
+
+```elixir
+defmodule CreditScoreAgent do
+  use Cerebelum.Workflow
+
+  workflow() do
+    timeline() do
+      start()
+      |> fetch_credit_score()
+      |> calculate_risk()
+      |> done()
+    end
+  end
+
+  def fetch_credit_score(ctx) do
+    CreditBureau.fetch(ctx.applicant_id)
+  end
+
+  def calculate_risk(ctx, %{fetch_credit_score: credit_data}) do
+    score = RiskModel.calculate(credit_data)
+
+    # Esto es lo que retorna al parallel
+    %{
+      agent: CreditScoreAgent,
+      risk_score: score
+    }
+  end
 end
 ```
 
@@ -405,129 +379,194 @@ end
 
 ## Agent Communication
 
-### Overview
-
-Parallel agents can communicate using **broadcast**, **await**, **send_to**, and **receive_from**.
-
 ### Broadcast & Await
 
+Comunicación 1-a-todos (broadcast).
+
 ```elixir
-defmodule ProducerAgent do
+# Producer Agent
+defmodule ResearchAgent do
   use Cerebelum.Workflow
 
-  timeline do
-    process_data()
-    |> broadcast_results()
+  workflow() do
+    timeline() do
+      start()
+      |> conduct_research()
+      |> broadcast_findings()
+      |> done()
+    end
   end
 
-  fn broadcast_results(ctx, %{process_data: result}) do
-    # Broadcast to all peers in parallel group
-    broadcast(:data_ready, %{
-      from: ProducerAgent,
-      result: result,
-      timestamp: DateTime.utc_now()
-    })
+  def conduct_research(ctx) do
+    findings = ExternalAPI.research(ctx.topic)
+    %{findings: findings}
+  end
 
-    result
+  def broadcast_findings(ctx, %{conduct_research: research}) do
+    # Broadcast a TODOS los peers
+    broadcast(:research_complete) do
+      %{
+        from: ResearchAgent,
+        findings: research.findings,
+        timestamp: DateTime.utc_now()
+      }
+    end
+
+    %{agent: ResearchAgent, findings: research.findings}
   end
 end
 
-defmodule ConsumerAgent do
+# Consumer Agent
+defmodule WriterAgent do
   use Cerebelum.Workflow
 
-  timeline do
-    wait_for_data()
-    |> process_received()
+  workflow() do
+    timeline() do
+      start()
+      |> wait_for_research()
+      |> write_content()
+      |> done()
+    end
   end
 
-  fn wait_for_data(ctx) do
-    # Wait for broadcast from ProducerAgent
-    await ProducerAgent, :data_ready, timeout: 30_000
+  def wait_for_research(ctx) do
+    # Espera broadcast de ResearchAgent
+    await(ResearchAgent, :research_complete) do
+      timeout 60_000
+      on_timeout -> %{findings: "no data"}
+    end
   end
 
-  fn process_received(ctx, %{wait_for_data: received}) do
-    # received contains the broadcast payload
-    %{
-      original: received.result,
-      processed_at: DateTime.utc_now()
-    }
+  def write_content(ctx, %{wait_for_research: research_data}) do
+    content = ContentGenerator.write(research_data.findings)
+    %{agent: WriterAgent, content: content}
   end
 end
 ```
 
 ### Send To & Receive From
 
+Comunicación 1-a-1 (dirigida).
+
 ```elixir
+# Coordinator
 defmodule CoordinatorAgent do
   use Cerebelum.Workflow
 
-  timeline do
-    prepare_task()
-    |> send_task()
-    |> wait_response()
+  workflow() do
+    timeline() do
+      start()
+      |> assign_tasks()
+      |> wait_for_results()
+      |> done()
+    end
   end
 
-  fn send_task(ctx, %{prepare_task: task}) do
-    # Send to specific agent
-    send_to(WorkerAgent, :task_assigned, task)
-    task
+  def assign_tasks(ctx) do
+    [task1, task2 | _] = ctx.tasks
+
+    # Envía a WorkerAgent1 específicamente
+    send_to(WorkerAgent1, :task_assigned) do
+      %{
+        task: task1,
+        deadline: DateTime.add(DateTime.utc_now(), 60, :second)
+      }
+    end
+
+    # Envía a WorkerAgent2 específicamente
+    send_to(WorkerAgent2, :task_assigned) do
+      %{task: task2}
+    end
+
+    %{assigned_count: 2}
   end
 
-  fn wait_response(ctx) do
-    # Receive from specific agent
-    receive_from(WorkerAgent, :task_complete, timeout: 60_000)
+  def wait_for_results(ctx, %{assign_tasks: _assigned}) do
+    result1 = receive_from(WorkerAgent1, :task_complete) do
+      timeout 90_000
+      on_timeout -> %{error: :timeout}
+    end
+
+    result2 = receive_from(WorkerAgent2, :task_complete) do
+      timeout 90_000
+    end
+
+    %{worker1: result1, worker2: result2}
   end
 end
 
-defmodule WorkerAgent do
+# Worker
+defmodule WorkerAgent1 do
   use Cerebelum.Workflow
 
-  timeline do
-    wait_task()
-    |> execute_task()
-    |> send_result()
+  workflow() do
+    timeline() do
+      start()
+      |> wait_for_task()
+      |> execute_task()
+      |> send_result_back()
+      |> done()
+    end
   end
 
-  fn wait_task(ctx) do
-    receive_from(CoordinatorAgent, :task_assigned, timeout: 30_000)
+  def wait_for_task(ctx) do
+    receive_from(CoordinatorAgent, :task_assigned) do
+      timeout 30_000
+      on_timeout -> error(:no_task)
+    end
   end
 
-  fn send_result(ctx, %{execute_task: result}) do
-    send_to(CoordinatorAgent, :task_complete, result)
-    result
+  def execute_task(ctx, %{wait_for_task: task_data}) do
+    result = TaskProcessor.process(task_data.task)
+    %{result: result}
+  end
+
+  def send_result_back(ctx, %{execute_task: execution}) do
+    send_to(CoordinatorAgent, :task_complete) do
+      %{result: execution.result, completed_at: DateTime.utc_now()}
+    end
+
+    %{completed: true}
   end
 end
 ```
 
-### Communication Helpers
+### Helpers de Comunicación
 
 ```elixir
-# Broadcast to all peers
-broadcast(:message_type, data)
+# Broadcast a todos
+broadcast(:message_type) do
+  %{data: ...}
+end
 
-# Await broadcast from agent
-await AgentModule, :message_type, timeout: ms
+# Await broadcast
+await(AgentModule, :message_type) do
+  timeout ms
+  on_timeout -> default_value
+  on_receive fn data -> transform(data) end
+end
 
-# Send to specific agent
-send_to(AgentModule, :message_type, data)
+# Send a específico
+send_to(AgentModule, :message_type) do
+  %{data: ...}
+end
 
-# Receive from specific agent
-receive_from(AgentModule, :message_type, timeout: ms)
+# Receive de específico
+receive_from(AgentModule, :message_type) do
+  timeout ms
+  on_timeout -> default_value
+end
 ```
 
 ---
 
 ## External Signals
 
-### Overview
-
-Workflows can wait for external events (approvals, webhooks, etc.) using `receive_signal`.
-
-### Syntax
+### Sintaxis
 
 ```elixir
-fn step_name(ctx, deps) do
-  receive_signal do
+def step_name(ctx, deps) do
+  receive_signal() do
     {:signal_type, data} -> result
     {:other_signal, data} -> other_result
   after timeout ->
@@ -536,17 +575,38 @@ fn step_name(ctx, deps) do
 end
 ```
 
-### Example: Human Approval
+### Ejemplo: Human Approval
 
 ```elixir
-fn wait_for_approval(ctx, %{submit_request: request}) do
-  # Notify approver
-  ApprovalSystem.notify(ctx.approver_email, request)
+workflow() do
+  timeline() do
+    start()
+    |> submit_request()
+    |> wait_for_approval()
+    |> process_approved()
+    |> done()
+  end
 
-  # Wait for external signal
-  receive_signal do
+  diverge(wait_for_approval) do
+    :approval_rejected -> notify_applicant() |> failed()
+    :approval_timeout -> escalate_to_manager()
+    :request_cancelled -> cancelled()
+  end
+end
+
+def submit_request(ctx) do
+  ApprovalSystem.notify(ctx.approver_email, ctx.request)
+  %{submitted_at: DateTime.utc_now()}
+end
+
+def wait_for_approval(ctx, %{submit_request: submission}) do
+  receive_signal() do
     {:approval_decision, %{approved: true, approver: approver}} ->
-      %{approved: true, approver: approver, approved_at: DateTime.utc_now()}
+      %{
+        approved: true,
+        approver: approver,
+        approved_at: DateTime.utc_now()
+      }
 
     {:approval_decision, %{approved: false, reason: reason}} ->
       error(:approval_rejected)
@@ -554,30 +614,27 @@ fn wait_for_approval(ctx, %{submit_request: request}) do
     {:cancel_request, _data} ->
       error(:request_cancelled)
 
-  after 3_600_000 ->  # 1 hour
+  after 3_600_000 ->  # 1 hora
     error(:approval_timeout)
   end
 end
 
-# Diverge handles errors
-diverge wait_for_approval do
-  :approval_rejected -> notify_applicant() |> failed()
-  :approval_timeout -> escalate_to_manager()
-  :request_cancelled -> cancelled()
+def process_approved(ctx, %{wait_for_approval: approval}) do
+  %{status: :approved, approver: approval.approver}
 end
 ```
 
-### Sending Signals from External Systems
+### Enviar Señales desde Fuera
 
 ```elixir
-# From Elixir code
+# Desde código Elixir
 Cerebelum.send_signal(
   "exec-uuid-123",           # execution_id
   :approval_decision,        # signal name
   %{approved: true, approver: "john@example.com"}
 )
 
-# From HTTP API
+# Desde HTTP API
 POST /workflows/exec-123/signal
 {
   "signal": "approval_decision",
@@ -592,89 +649,111 @@ POST /workflows/exec-123/signal
 
 ## Subworkflows
 
-### Syntax
+### Sintaxis
 
 ```elixir
-fn step_name(ctx, deps) do
-  subworkflow(SubWorkflowModule, %{data: ...})
+def step_name(ctx, deps) do
+  subworkflow(SubWorkflowModule) do
+    %{data: ...}
+  end
 end
 ```
 
-### Example
+### Ejemplo
 
 ```elixir
-# Main workflow
-fn verify_documents(ctx, %{validate_application: data}) do
-  subworkflow(DocumentVerification, %{
-    documents: data.documents,
-    required_types: [:id, :proof_of_income]
-  })
+# Main Workflow
+workflow() do
+  timeline() do
+    start()
+    |> validate_application()
+    |> verify_documents()
+    |> process_application()
+    |> done()
+  end
+end
+
+def verify_documents(ctx, %{validate_application: data}) do
+  subworkflow(DocumentVerification) do
+    %{
+      documents: data.documents,
+      required_types: [:id, :proof_of_income]
+    }
+  end
 end
 
 # Subworkflow
 defmodule DocumentVerification do
   use Cerebelum.Workflow
 
-  timeline do
-    extract_data()
-    |> validate_format()
-    |> verify_authenticity()
+  workflow() do
+    timeline() do
+      start()
+      |> extract_data()
+      |> validate_format()
+      |> verify_authenticity()
+      |> done()
+    end
   end
 
-  fn extract_data(ctx) do
+  def extract_data(ctx) do
     Enum.map(ctx.documents, &OCR.extract/1)
   end
 
-  fn validate_format(ctx, %{extract_data: extracted}) do
-    Enum.all?(extracted, &valid_format?/1)
+  def validate_format(ctx, %{extract_data: extracted}) do
+    %{all_valid: Enum.all?(extracted, &valid_format?/1)}
   end
 
-  fn verify_authenticity(ctx, %{validate_format: validated}) do
-    Enum.all?(validated, &authentic?/1)
+  def verify_authenticity(ctx, %{validate_format: validated}) do
+    %{authenticated: Enum.all?(validated, &authentic?/1)}
   end
 end
 ```
 
 ---
 
-## Complete Examples
+## Ejemplos Completos
 
-### Example 1: Payment Processing
+### Ejemplo 1: Payment Processing
 
 ```elixir
 defmodule PaymentWorkflow do
   use Cerebelum.Workflow
 
-  timeline do
-    validate_payment()
-    |> check_fraud()
-    |> process_payment()
-    |> send_receipt()
-  end
-
-  diverge validate_payment do
-    :timeout -> retry(3, delay: 2000) |> validate_payment()
-    :invalid_card -> notify_customer() |> failed()
-  end
-
-  diverge process_payment do
-    :insufficient_funds -> notify_customer() |> request_payment() |> failed()
-    :gateway_error ->
-      retry do
-        attempts 5
-        delay fn attempt -> attempt * 2000 end
-        max_delay 30_000
-      end
+  workflow() do
+    timeline() do
+      start()
+      |> validate_payment()
+      |> check_fraud()
       |> process_payment()
+      |> send_receipt()
+      |> done()
+    end
+
+    diverge(validate_payment) do
+      :timeout -> retry(3, delay: 2000) |> validate_payment()
+      :invalid_card -> notify_customer() |> failed()
+    end
+
+    diverge(process_payment) do
+      :insufficient_funds -> notify_customer() |> failed()
+      :gateway_error ->
+        retry() do
+          attempts 5
+          delay fn attempt -> attempt * 2000 end
+          max_delay 30_000
+        end
+        |> process_payment()
+    end
+
+    branch(check_fraud) do
+      fraud_score > 0.8 -> cancel_payment() |> failed()
+      fraud_score > 0.5 -> request_verification()
+      fraud_score <= 0.5 -> process_payment()
+    end
   end
 
-  branch check_fraud do
-    fraud_score > 0.8 -> cancel_payment() |> failed()
-    fraud_score > 0.5 -> request_verification()
-    fraud_score <= 0.5 -> process_payment()
-  end
-
-  fn validate_payment(ctx) do
+  def validate_payment(ctx) do
     case PaymentAPI.validate(ctx.card) do
       {:ok, validated} -> validated
       {:error, :timeout} -> error(:timeout)
@@ -682,12 +761,12 @@ defmodule PaymentWorkflow do
     end
   end
 
-  fn check_fraud(ctx, %{validate_payment: payment}) do
+  def check_fraud(ctx, %{validate_payment: payment}) do
     score = FraudDetector.score(payment)
     %{fraud_score: score, validated_payment: payment}
   end
 
-  fn process_payment(ctx, %{check_fraud: check}) do
+  def process_payment(ctx, %{check_fraud: check}) do
     case PaymentGateway.charge(check.validated_payment) do
       {:ok, transaction} -> transaction
       {:error, :insufficient_funds} -> error(:insufficient_funds)
@@ -695,49 +774,58 @@ defmodule PaymentWorkflow do
     end
   end
 
-  fn send_receipt(ctx, %{process_payment: transaction}) do
+  def send_receipt(ctx, %{process_payment: transaction}) do
     Email.send_receipt(ctx.customer_email, transaction)
     %{receipt_sent: true}
+  end
+
+  def notify_customer(ctx, _deps) do
+    Email.send(ctx.customer_email, "Payment failed")
+    %{notified: true}
   end
 end
 ```
 
-### Example 2: Loan Application with Multi-Agent
+### Ejemplo 2: Multi-Agent Loan Application
 
 ```elixir
 defmodule LoanApplication do
   use Cerebelum.Workflow
 
-  timeline do
-    validate_application()
-    |> verify_documents()
-    |> parallel_risk_analysis()
-    |> consensus_decision()
-    |> human_review()
-    |> generate_report()
-  end
-
-  diverge validate_application do
-    :api_timeout ->
-      retry do
-        attempts 5
-        delay fn attempt -> attempt * 3000 end
-        max_delay 30_000
-      end
-      |> log_retry()
+  workflow() do
+    timeline() do
+      start()
       |> validate_application()
+      |> verify_documents()
+      |> parallel_risk_analysis()
+      |> consensus_decision()
+      |> human_review()
+      |> generate_report()
+      |> done()
+    end
 
-    :invalid_data -> notify_applicant() |> failed()
+    diverge(validate_application) do
+      :api_timeout ->
+        retry() do
+          attempts 5
+          delay fn attempt -> attempt * 3000 end
+          max_delay 30_000
+        end
+        |> log_retry()
+        |> validate_application()
+
+      :invalid_data -> notify_applicant() |> failed()
+    end
+
+    branch(consensus_decision) do
+      risk_level == :critical -> cancelled()
+      risk_level == :high and amount > 100_000 -> escalate_to_committee()
+      risk_level == :high -> human_review()
+      risk_level == :low -> generate_report()
+    end
   end
 
-  branch consensus_decision do
-    risk_level == :critical -> cancelled()
-    risk_level == :high and amount > 100_000 -> escalate_to_committee()
-    risk_level == :high -> human_review()
-    risk_level == :low -> generate_report()
-  end
-
-  fn validate_application(ctx) do
+  def validate_application(ctx) do
     case ApplicationAPI.validate(ctx.application_id) do
       {:ok, data} -> data
       {:error, :timeout} -> error(:api_timeout)
@@ -745,25 +833,29 @@ defmodule LoanApplication do
     end
   end
 
-  fn verify_documents(ctx, %{validate_application: data}) do
-    subworkflow(DocumentVerification, %{
-      documents: data.documents,
-      required_types: [:id, :proof_of_income]
-    })
+  def verify_documents(ctx, %{validate_application: data}) do
+    subworkflow(DocumentVerification) do
+      %{
+        documents: data.documents,
+        required_types: [:id, :proof_of_income]
+      }
+    end
   end
 
-  fn parallel_risk_analysis(ctx, deps) do
-    parallel [
-      {CreditScoreAgent, %{applicant_id: deps.validate_application.applicant.id}},
-      {FinancialAnalysisAgent, %{documents: deps.verify_documents}},
-      {FraudDetectionAgent, %{applicant: deps.validate_application.applicant}}
-    ],
-    timeout: 120_000,
-    on_failure: :continue,
-    min_successes: 2
+  def parallel_risk_analysis(ctx, deps) do
+    parallel() do
+      agents [
+        {CreditScoreAgent, %{applicant_id: deps.validate_application.applicant.id}},
+        {FinancialAnalysisAgent, %{documents: deps.verify_documents}},
+        {FraudDetectionAgent, %{applicant: deps.validate_application.applicant}}
+      ]
+      timeout 120_000
+      on_failure :continue
+      min_successes 2
+    end
   end
 
-  fn consensus_decision(ctx, %{parallel_risk_analysis: results}) do
+  def consensus_decision(ctx, %{parallel_risk_analysis: results}) do
     scores = Enum.map(results, & &1.risk_score)
     avg_score = Enum.sum(scores) / length(scores)
 
@@ -774,105 +866,70 @@ defmodule LoanApplication do
     }
   end
 
-  fn human_review(ctx, %{consensus_decision: decision}) do
+  def human_review(ctx, %{consensus_decision: decision}) do
     ReviewSystem.notify_reviewer(ctx.execution_id, decision)
 
-    receive_signal do
+    receive_signal() do
       {:review_complete, %{approved: true, reviewer: reviewer}} ->
         %{approved: true, reviewer: reviewer, reviewed_at: DateTime.utc_now()}
 
       {:review_complete, %{approved: false, reason: reason}} ->
         error(:review_rejected)
 
-    after 7_200_000 ->  # 2 hours
+    after 7_200_000 ->  # 2 horas
       error(:review_timeout)
     end
   end
-end
 
-# Agent with communication
-defmodule CreditScoreAgent do
-  use Cerebelum.Workflow
-
-  timeline do
-    fetch_credit_data()
-    |> calculate_score()
-    |> broadcast_results()
-    |> listen_for_fraud()
-    |> finalize()
-  end
-
-  diverge fetch_credit_data do
-    :bureau_timeout -> retry(3, delay: 3000) |> fetch_credit_data()
-    :bureau_unavailable -> failed()
-  end
-
-  fn fetch_credit_data(ctx) do
-    case CreditBureau.fetch(ctx.applicant_id) do
-      {:ok, data} -> data
-      {:error, :timeout} -> error(:bureau_timeout)
-      {:error, :unavailable} -> error(:bureau_unavailable)
-    end
-  end
-
-  fn calculate_score(ctx, %{fetch_credit_data: data}) do
-    score = RiskModel.calculate(data)
-    %{risk_score: score, credit_data: data}
-  end
-
-  fn broadcast_results(ctx, %{calculate_score: result}) do
-    broadcast(:credit_analysis_complete, %{
-      agent: CreditScoreAgent,
-      risk_score: result.risk_score
+  def generate_report(ctx, deps) do
+    Report.generate(%{
+      application_id: ctx.application_id,
+      decision: deps.consensus_decision,
+      review: deps[:human_review],
+      timestamp: DateTime.utc_now()
     })
-    result
-  end
-
-  fn listen_for_fraud(ctx, %{calculate_score: analysis}) do
-    case await FraudDetectionAgent, :fraud_alert, timeout: 10_000 do
-      {:ok, %{fraud_detected: true, severity: severity}} ->
-        # Adjust score if fraud detected
-        adjusted = min(1.0, analysis.risk_score + severity * 0.3)
-        %{analysis | risk_score: adjusted, fraud_flagged: true}
-
-      _ ->
-        Map.put(analysis, :fraud_flagged, false)
-    end
-  end
-
-  fn finalize(ctx, %{listen_for_fraud: final}) do
-    final
   end
 end
 ```
 
 ---
 
-## Syntax Reference
+## Sintaxis Reference
+
+### Estructura Principal
+
+```elixir
+workflow() do
+  timeline() do...end
+  diverge(step) do...end
+  branch(step) do...end
+end
+```
 
 ### Timeline
 
 ```elixir
-timeline do
-  step1()
+timeline() do
+  start()
+  |> step1()
   |> step2()
-  |> step3()
+  |> done()
 end
 ```
 
-### Diverge
+### Diverge (Error Handling)
 
 ```elixir
 # Simple
-diverge step_name do
+diverge(step) do
   :error_type -> retry(N, delay: MS) |> step()
   :error_type -> step1() |> step2() |> failed()
 end
 
-# Complex
-diverge step_name do
+# Complejo
+diverge(step) do
   :error_type ->
-    retry do
+    retry() do
       attempts N
       delay fn attempt -> MS end
       max_delay MS
@@ -883,23 +940,23 @@ diverge step_name do
 end
 ```
 
-### Branch
+### Branch (Condicional)
 
 ```elixir
-branch step_name do
+branch(step) do
   condition1 -> destination1()
   condition2 -> destination2()
 end
 ```
 
-### Functions
+### Funciones de Steps
 
 ```elixir
-fn function_name(ctx) do
-  result  # Auto-wrapped in {:ok, result}
+def step_name(ctx) do
+  result  # Auto-wrapped en {:ok, result}
 end
 
-fn function_name(ctx, deps) do
+def step_name(ctx, deps) do
   result
 end
 ```
@@ -907,56 +964,80 @@ end
 ### Parallel
 
 ```elixir
-parallel [
-  {Agent1, %{...}},
-  {Agent2, %{...}}
-],
-timeout: MS,
-on_failure: :stop | :continue,
-min_successes: N
+parallel() do
+  agents [
+    {Agent1, %{...}},
+    {Agent2, %{...}}
+  ]
+  timeout MS
+  on_failure :stop | :continue
+  min_successes N
+end
 ```
 
-### Communication
+### Comunicación
 
 ```elixir
-broadcast(:message_type, data)
-await AgentModule, :message_type, timeout: MS
-send_to(AgentModule, :message_type, data)
-receive_from(AgentModule, :message_type, timeout: MS)
+broadcast(:message_type) do
+  %{data: ...}
+end
+
+await(AgentModule, :message_type) do
+  timeout MS
+  on_timeout -> default
+end
+
+send_to(AgentModule, :message_type) do
+  %{data: ...}
+end
+
+receive_from(AgentModule, :message_type) do
+  timeout MS
+end
 ```
 
 ### Signals
 
 ```elixir
-receive_signal do
+receive_signal() do
   {:signal_type, data} -> result
-after timeout -> {:timeout, %{}}
+after timeout -> default
 end
 ```
 
 ### Subworkflows
 
 ```elixir
-subworkflow(ModuleName, %{data: ...})
+subworkflow(ModuleName) do
+  %{data: ...}
+end
 ```
 
 ### Helpers
 
 ```elixir
-error(:type)      # Trigger diverge
-timeout(data)     # Timeout error
-done()            # Success
-failed()          # Failure
-cancelled()       # Cancelled
+start()           # Inicio del timeline
+done()            # Fin exitoso
+failed()          # Fin con fallo
+cancelled()       # Fin cancelado
+error(:type)      # Emitir error (activa diverge)
+timeout(data)     # Emitir timeout
 ```
 
-### Naming Rules
+### Reglas de Naming
 
-- **Steps (no `:`)** - `validate_payment`, `CreditScoreAgent`
-- **Error types (with `:`)** - `:timeout`, `:invalid_card`
-- **Values (with `:`)** - `:high`, `:low`, `:approved`
-- **Fields (no `:`)** - `risk_level`, `amount`, `status`
-- **Keywords (with `:`)** - `retry:`, `delay:`, `timeout:`
+- **Steps (sin `:`)** - `validate_payment`, `CreditScoreAgent`
+- **Error types (con `:`)** - `:timeout`, `:invalid_card`
+- **Valores (con `:`)** - `:high`, `:low`, `:approved`
+- **Campos (sin `:`)** - `risk_level`, `amount`, `status`
+- **Keywords (con `:`)** - `timeout:`, `delay:`, `attempts:`
+
+---
+
+**Ver también:**
+- [Final Syntax Examples](final-syntax.md) - Todos los casos de uso completos
+- [Subworkflows Design](subworkflows-design.md) - Arquitectura de subworkflows
+- [Execution Engine](execution-engine-state-machine.md) - Cómo funciona el engine
 
 ---
 

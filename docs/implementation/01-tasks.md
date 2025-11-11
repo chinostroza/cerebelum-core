@@ -3298,6 +3298,890 @@ end
 
 ---
 
+## Phase 8: Multi-Language SDK Implementation
+
+**Goal:** Enable developers using Kotlin, TypeScript, Python, and other languages to define and execute workflows with native syntax
+
+**Requirement Mapping:** Implements **Requirement 35: Multi-Language SDK Support** (93 acceptance criteria) and **Requirement 36: SDK Language Support Roadmap** (34 acceptance criteria)
+
+**Duration:** 60-75 days (parallel workstreams)
+
+**Deliverables:**
+- gRPC service in Core BEAM for worker communication
+- Kotlin SDK (Priority 1 - MVP)
+- TypeScript SDK (Priority 1 - MVP)
+- Python SDK (Priority 2 - Post-MVP)
+- SDK Generator tool for new languages
+- Blueprint validation service
+- Worker pooling & task distribution
+- Fault tolerance (heartbeat, DLQ, retry)
+- SDK documentation & examples
+
+**Architecture:** Dual-mode execution (Local for dev + Distributed for prod) with same workflow code
+
+---
+
+### [P8.1] Implement gRPC Service Interface
+
+**Estimate:** 8 days
+**Dependencies:** [P2.8, P4.3]
+**Layer:** Infrastructure
+**Priority:** Critical
+
+**Description:** Expose gRPC service from Core BEAM for SDK worker communication.
+
+**Acceptance Criteria:**
+- [ ] Define `worker_service.proto` with all RPC methods
+- [ ] Implement `WorkerService` gRPC server in Elixir
+- [ ] Support worker registration (Register RPC)
+- [ ] Support heartbeat monitoring (Heartbeat RPC)
+- [ ] Support task polling (PollForTask RPC - long-polling)
+- [ ] Support result submission (SubmitResult RPC)
+- [ ] Support blueprint submission (SubmitBlueprint RPC)
+- [ ] Support workflow execution requests (ExecuteWorkflow RPC)
+- [ ] Handle both JSON and Protobuf serialization formats
+- [ ] gRPC server integrated into OTP supervision tree
+
+**Implementation Notes:**
+```protobuf
+service WorkerService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc Unregister(UnregisterRequest) returns (Empty);
+  rpc PollForTask(PollRequest) returns (Task);
+  rpc SubmitResult(TaskResult) returns (Ack);
+  rpc SubmitBlueprint(Blueprint) returns (BlueprintValidation);
+  rpc ExecuteWorkflow(ExecuteRequest) returns (ExecutionHandle);
+}
+```
+
+Use `grpc` package for Elixir: https://hex.pm/packages/grpc
+
+**Testing Requirements:**
+- Unit test: Proto messages serialize/deserialize correctly
+- Integration test: Register worker via gRPC
+- Integration test: Heartbeat mechanism works
+- Integration test: Long-polling returns task within timeout
+- Integration test: Submit result updates execution state
+- Load test: 1K concurrent workers polling
+
+---
+
+### [P8.2] Implement Worker Registry & Pool Management
+
+**Estimate:** 5 days
+**Dependencies:** [P8.1]
+**Layer:** Infrastructure
+**Priority:** Critical
+
+**Description:** Manage pool of registered workers with health monitoring.
+
+**Acceptance Criteria:**
+- [ ] `Cerebelum.Infrastructure.WorkerRegistry` GenServer
+- [ ] Track registered workers (worker_id, language, capabilities, status)
+- [ ] Track worker heartbeats (last_seen timestamp)
+- [ ] Detect dead workers (3 missed heartbeats = 30s)
+- [ ] Automatically deregister dead workers
+- [ ] Expose worker pool status via API
+- [ ] Support worker draining (graceful shutdown)
+- [ ] Store worker metadata in ETS for fast lookup
+
+**Implementation Notes:**
+```elixir
+defmodule Cerebelum.Infrastructure.WorkerRegistry do
+  use GenServer
+
+  def register_worker(worker_id, metadata) do
+    GenServer.call(__MODULE__, {:register, worker_id, metadata})
+  end
+
+  def heartbeat(worker_id) do
+    GenServer.cast(__MODULE__, {:heartbeat, worker_id})
+  end
+
+  def get_idle_workers do
+    GenServer.call(__MODULE__, :get_idle_workers)
+  end
+
+  # Periodically check for dead workers
+  def handle_info(:check_health, state) do
+    now = System.monotonic_time(:second)
+    dead_workers = Enum.filter(state.workers, fn {_id, worker} ->
+      now - worker.last_heartbeat > 30  # 30s timeout
+    end)
+
+    Enum.each(dead_workers, fn {worker_id, _} ->
+      Logger.warn("Worker #{worker_id} is dead, deregistering")
+      deregister_worker(worker_id)
+      reassign_tasks(worker_id)
+    end)
+
+    Process.send_after(self(), :check_health, 10_000)  # Check every 10s
+    {:noreply, state}
+  end
+end
+```
+
+**Testing Requirements:**
+- Unit test: Register worker adds to pool
+- Unit test: Heartbeat updates last_seen timestamp
+- Unit test: Dead worker detection after 30s
+- Unit test: Dead worker deregistration triggers task reassignment
+- Integration test: Multiple workers register successfully
+- Property test: Worker pool always consistent
+
+---
+
+### [P8.3] Implement Task Distribution & Routing
+
+**Estimate:** 7 days
+**Dependencies:** [P8.2]
+**Layer:** Infrastructure
+**Priority:** Critical
+
+**Description:** Pull-based task distribution with sticky routing for cache locality.
+
+**Acceptance Criteria:**
+- [ ] `Cerebelum.Infrastructure.TaskRouter` module
+- [ ] Pull-based task assignment (workers poll for work)
+- [ ] Long-polling support (block up to 30s if no tasks available)
+- [ ] Sticky routing: route steps of same execution to same worker
+- [ ] Fallback to any idle worker if preferred worker unavailable
+- [ ] Track execution → worker mapping in ETS
+- [ ] Queue tasks when no workers available
+- [ ] Reassign tasks when worker dies
+- [ ] Support task cancellation via heartbeat response
+
+**Implementation Notes:**
+```elixir
+defmodule Cerebelum.Infrastructure.TaskRouter do
+  def poll_for_task(worker_id, timeout_ms) do
+    # Try to get task immediately
+    case get_next_task(worker_id) do
+      {:ok, task} -> {:ok, task}
+      :no_tasks ->
+        # Long-poll: wait up to timeout_ms for new task
+        receive do
+          {:task_available, task} -> {:ok, task}
+        after
+          timeout_ms -> {:error, :timeout}
+        end
+    end
+  end
+
+  defp get_next_task(worker_id) do
+    # Try to get task from executions this worker already handles (sticky routing)
+    case get_sticky_task(worker_id) do
+      {:ok, task} -> {:ok, task}
+      :no_sticky_tasks ->
+        # Get any task from global queue
+        get_any_task(worker_id)
+    end
+  end
+
+  defp get_sticky_task(worker_id) do
+    # ETS lookup: which executions is this worker handling?
+    executions = :ets.lookup(:worker_executions, worker_id)
+    |> Enum.map(fn {_, exec_id} -> exec_id end)
+
+    # Check if any of these executions have pending tasks
+    Enum.find_value(executions, :no_sticky_tasks, fn exec_id ->
+      case pop_task_for_execution(exec_id) do
+        {:ok, task} -> {:ok, task}
+        :empty -> nil
+      end
+    end)
+  end
+end
+```
+
+**Testing Requirements:**
+- Unit test: Pull-based polling returns task
+- Unit test: Long-polling blocks until task available or timeout
+- Unit test: Sticky routing assigns same execution to same worker
+- Unit test: Fallback to any worker when preferred unavailable
+- Unit test: Task reassignment when worker dies
+- Integration test: Multiple workers polling concurrently
+- Performance test: 1K tasks distributed to 100 workers in <1s
+
+---
+
+### [P8.4] Implement Blueprint Validation Service
+
+**Estimate:** 5 days
+**Dependencies:** [P1.3, P8.1]
+**Layer:** Application
+**Priority:** Critical
+
+**Description:** Validate Blueprint JSON submitted by SDKs before execution.
+
+**Acceptance Criteria:**
+- [ ] `Cerebelum.Application.UseCases.ValidateBlueprint` use case
+- [ ] Validate JSON structure (required fields present)
+- [ ] Validate all timeline steps referenced in steps_metadata
+- [ ] Validate diverge patterns reference valid steps
+- [ ] Validate branch actions reference valid steps (skip_to, back_to)
+- [ ] Detect cycles in back_to chains
+- [ ] Validate type consistency (if metadata provides types)
+- [ ] Return detailed validation errors with line numbers
+- [ ] Store validated blueprints in database
+- [ ] Generate workflow_id and version hash
+
+**Implementation Notes:**
+```elixir
+defmodule Cerebelum.Application.UseCases.ValidateBlueprint do
+  def execute(blueprint_json) do
+    with {:ok, blueprint} <- Jason.decode(blueprint_json),
+         :ok <- validate_structure(blueprint),
+         :ok <- validate_references(blueprint),
+         :ok <- validate_no_cycles(blueprint),
+         :ok <- validate_types(blueprint) do
+      workflow_id = generate_workflow_id(blueprint)
+      version = compute_version_hash(blueprint)
+
+      {:ok, %{workflow_id: workflow_id, version: version, blueprint: blueprint}}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_structure(blueprint) do
+    required_fields = ["id", "version", "timeline", "steps_metadata"]
+
+    missing = Enum.filter(required_fields, fn field ->
+      not Map.has_key?(blueprint, field)
+    end)
+
+    if missing == [] do
+      :ok
+    else
+      {:error, "Missing required fields: #{Enum.join(missing, ", ")}"}
+    end
+  end
+
+  defp validate_references(%{"timeline" => timeline, "steps_metadata" => steps}) do
+    missing_steps = Enum.filter(timeline, fn step ->
+      not Map.has_key?(steps, step)
+    end)
+
+    if missing_steps == [] do
+      :ok
+    else
+      {:error, "Timeline references undefined steps: #{Enum.join(missing_steps, ", ")}"}
+    end
+  end
+
+  defp validate_no_cycles(%{"branches" => branches, "timeline" => timeline}) do
+    # Check for back_to cycles using graph traversal
+    # ...
+  end
+end
+```
+
+**Testing Requirements:**
+- Unit test: Valid blueprint passes validation
+- Unit test: Missing required fields rejected
+- Unit test: Undefined step reference rejected
+- Unit test: back_to cycle detected and rejected
+- Unit test: Type mismatch detected (Order -> Payment vs Order -> Boolean)
+- Integration test: Blueprint validated and stored in database
+
+---
+
+### [P8.5] Implement Kotlin SDK (Priority 1)
+
+**Estimate:** 15 days
+**Dependencies:** [P8.1, P8.4]
+**Layer:** External SDK
+**Priority:** Critical
+
+**Description:** Kotlin SDK with Jetpack Compose-style syntax, type safety, and dual-mode execution.
+
+**Acceptance Criteria:**
+- [ ] Project structure: `cerebelum-sdk-kotlin/`
+- [ ] Workflow DSL with lambda receivers (Compose-style)
+- [ ] Type-safe StepRef<I, O> with phantom types
+- [ ] KFunction references (`::functionName`)
+- [ ] Compile-time type checking via Kotlin compiler
+- [ ] Blueprint serialization to JSON
+- [ ] LocalExecutor (in-process, zero infrastructure)
+- [ ] DistributedExecutor (gRPC client to Core)
+- [ ] Worker implementation (register, heartbeat, poll, execute)
+- [ ] JSON serialization (default)
+- [ ] Protobuf serialization (opt-in via @ProtoSerializable)
+- [ ] Error handling with sealed classes
+- [ ] Context object passed to steps
+- [ ] Unit tests (>90% coverage)
+- [ ] Integration tests with Core BEAM
+- [ ] Example workflows (hello world, order processing)
+- [ ] README with quick start guide
+
+**Implementation Notes:**
+```kotlin
+// DSL API
+fun <I, O> workflow(id: String, builder: WorkflowBuilder.() -> Unit): Workflow<I, O>
+fun <I, O> WorkflowBuilder.step(fn: KFunction<O>): StepRef<I, O>
+fun WorkflowBuilder.timeline(builder: TimelineBuilder.() -> Unit)
+fun WorkflowBuilder.diverge(on: StepRef<*, *>, builder: DivergeBuilder.() -> Unit)
+fun WorkflowBuilder.branch(on: StepRef<*, *>, builder: BranchBuilder.() -> Unit)
+
+// Executors
+interface Executor {
+    suspend fun <I, O> execute(workflow: Workflow<I, O>, input: I): Result<O>
+}
+
+class LocalExecutor : Executor {
+    override suspend fun <I, O> execute(workflow: Workflow<I, O>, input: I): Result<O> {
+        // In-process execution
+    }
+}
+
+class DistributedExecutor(coreUrl: String) : Executor {
+    private val grpcClient = WorkerServiceGrpcKt.WorkerServiceCoroutineStub(channel)
+
+    override suspend fun <I, O> execute(workflow: Workflow<I, O>, input: I): Result<O> {
+        // Submit blueprint, execute via Core BEAM
+        val blueprintJson = BlueprintSerializer.toJson(workflow)
+        val validation = grpcClient.submitBlueprint(blueprintJson)
+
+        if (!validation.isValid) {
+            return Result.failure(ValidationException(validation.errors))
+        }
+
+        val executionHandle = grpcClient.executeWorkflow(validation.workflowId, input)
+        return waitForCompletion(executionHandle.executionId)
+    }
+}
+```
+
+**Project Structure:**
+```
+cerebelum-sdk-kotlin/
+├── src/main/kotlin/com/cerebelum/sdk/
+│   ├── workflow/
+│   │   ├── WorkflowBuilder.kt
+│   │   ├── StepRef.kt
+│   │   ├── Blueprint.kt
+│   │   └── BlueprintSerializer.kt
+│   ├── executor/
+│   │   ├── Executor.kt
+│   │   ├── LocalExecutor.kt
+│   │   ├── DistributedExecutor.kt
+│   │   └── Context.kt
+│   ├── grpc/
+│   │   ├── WorkerServiceClient.kt
+│   │   ├── Worker.kt
+│   │   └── generated/  # gRPC stubs
+│   ├── serialization/
+│   │   ├── JsonSerializer.kt
+│   │   └── ProtobufSerializer.kt
+│   └── util/
+│       ├── Logger.kt
+│       └── Retry.kt
+├── src/test/kotlin/
+├── examples/
+│   ├── HelloWorld.kt
+│   └── OrderProcessing.kt
+├── build.gradle.kts
+└── README.md
+```
+
+**Testing Requirements:**
+- Unit test: Workflow DSL compiles without errors
+- Unit test: Type mismatches caught at compile-time
+- Unit test: Blueprint serialization correct
+- Unit test: LocalExecutor executes workflow in-process
+- Integration test: DistributedExecutor connects to Core via gRPC
+- Integration test: Worker registers, polls, and executes tasks
+- Integration test: End-to-end workflow execution via Core
+- Example test: All examples execute successfully
+
+---
+
+### [P8.6] Implement TypeScript SDK (Priority 1)
+
+**Estimate:** 15 days
+**Dependencies:** [P8.1, P8.4]
+**Layer:** External SDK
+**Priority:** Critical
+
+**Description:** TypeScript SDK with builder pattern, full type inference, and dual-mode execution.
+
+**Acceptance Criteria:**
+- [ ] Project structure: `cerebelum-sdk-typescript/` (npm package)
+- [ ] Workflow builder with type inference
+- [ ] Literal types for step names (autocomplete + compile-time checking)
+- [ ] Discriminated unions for patterns/actions
+- [ ] Blueprint serialization to JSON
+- [ ] LocalExecutor (in-process)
+- [ ] DistributedExecutor (gRPC client via @grpc/grpc-js)
+- [ ] Worker implementation
+- [ ] JSON serialization (default)
+- [ ] Error handling with Result types
+- [ ] Context object passed to steps
+- [ ] Unit tests with Jest (>90% coverage)
+- [ ] Integration tests with Core BEAM
+- [ ] Example workflows
+- [ ] README with quick start guide
+- [ ] Published to npm as `@cerebelum/sdk`
+
+**Implementation Notes:**
+```typescript
+// DSL API
+interface WorkflowDef<Steps extends Record<string, Function>> {
+  id: string;
+  steps: Steps;
+  timeline: (keyof Steps)[];
+  diverge?: Record<keyof Steps, DivergeClauses[]>;
+  branch?: Record<keyof Steps, BranchClauses[]>;
+}
+
+function workflow<Steps extends Record<string, Function>>(
+  def: WorkflowDef<Steps>
+): Workflow<Steps>
+
+// Executors
+interface Executor {
+  execute<I, O>(workflow: Workflow<any>, input: I): Promise<Result<O>>;
+}
+
+class LocalExecutor implements Executor {
+  async execute<I, O>(workflow: Workflow<any>, input: I): Promise<Result<O>> {
+    // In-process execution
+  }
+}
+
+class DistributedExecutor implements Executor {
+  private grpcClient: WorkerServiceClient;
+
+  constructor(config: { coreUrl: string; workerId: string }) {
+    this.grpcClient = new WorkerServiceClient(config.coreUrl);
+  }
+
+  async execute<I, O>(workflow: Workflow<any>, input: I): Promise<Result<O>> {
+    const blueprintJson = BlueprintSerializer.toJson(workflow);
+    const validation = await this.grpcClient.submitBlueprint(blueprintJson);
+
+    if (!validation.isValid) {
+      return Result.failure(new ValidationError(validation.errors));
+    }
+
+    const executionHandle = await this.grpcClient.executeWorkflow(
+      validation.workflowId,
+      input
+    );
+
+    return this.waitForCompletion(executionHandle.executionId);
+  }
+}
+```
+
+**Testing Requirements:**
+- Unit test: Workflow definition type-checks correctly
+- Unit test: Invalid step names rejected by TypeScript compiler
+- Unit test: Blueprint serialization correct
+- Unit test: LocalExecutor executes workflow
+- Integration test: DistributedExecutor via gRPC
+- Integration test: Worker end-to-end
+- Example test: All examples execute
+
+---
+
+### [P8.7] Implement Python SDK (Priority 2)
+
+**Estimate:** 12 days
+**Dependencies:** [P8.1, P8.4, P8.5]
+**Layer:** External SDK
+**Priority:** High
+
+**Description:** Python SDK with context managers, type hints, and dual-mode execution.
+
+**Acceptance Criteria:**
+- [ ] Project structure: `cerebelum-sdk-python/` (pip package)
+- [ ] WorkflowBuilder with context managers (`with` statement)
+- [ ] Type hints with mypy validation
+- [ ] StepRef with generics
+- [ ] Blueprint serialization
+- [ ] LocalExecutor (in-process)
+- [ ] DistributedExecutor (gRPC via grpcio)
+- [ ] Worker implementation
+- [ ] JSON serialization (default)
+- [ ] Error handling with exceptions
+- [ ] Context object
+- [ ] Unit tests with pytest (>90% coverage)
+- [ ] Integration tests with Core BEAM
+- [ ] Example workflows
+- [ ] README
+- [ ] Published to PyPI as `cerebelum-sdk`
+
+**Implementation Notes:**
+```python
+# DSL API
+class WorkflowBuilder:
+    def __init__(self, workflow_id: str):
+        self.id = workflow_id
+        self.steps_metadata = {}
+        self._timeline = []
+        self._diverges = {}
+        self._branches = {}
+
+    def timeline(self) -> TimelineBuilder:
+        return TimelineBuilder(self)
+
+    def diverge(self, on: StepRef) -> DivergeBuilder:
+        return DivergeBuilder(self, on)
+
+    def branch(self, on: StepRef) -> BranchBuilder:
+        return BranchBuilder(self, on)
+
+# Executors
+class Executor(ABC):
+    @abstractmethod
+    async def execute(self, workflow: Workflow, input: Any) -> Result:
+        pass
+
+class LocalExecutor(Executor):
+    async def execute(self, workflow: Workflow, input: Any) -> Result:
+        # In-process execution
+        pass
+
+class DistributedExecutor(Executor):
+    def __init__(self, core_url: str, worker_id: str):
+        self.grpc_client = WorkerServiceStub(grpc.insecure_channel(core_url))
+
+    async def execute(self, workflow: Workflow, input: Any) -> Result:
+        blueprint_json = BlueprintSerializer.to_json(workflow)
+        validation = self.grpc_client.SubmitBlueprint(blueprint_json)
+
+        if not validation.is_valid:
+            raise ValidationError(validation.errors)
+
+        execution_handle = self.grpc_client.ExecuteWorkflow(
+            workflow_id=validation.workflow_id,
+            input=input
+        )
+
+        return await self.wait_for_completion(execution_handle.execution_id)
+```
+
+**Testing Requirements:**
+- Unit test: Workflow builder creates correct structure
+- Unit test: mypy validates type hints
+- Unit test: Blueprint serialization
+- Unit test: LocalExecutor executes workflow
+- Integration test: DistributedExecutor via gRPC
+- Integration test: Worker end-to-end
+- Example test: All examples execute
+
+---
+
+### [P8.8] Implement Dead Letter Queue (DLQ)
+
+**Estimate:** 4 days
+**Dependencies:** [P8.3, P4.3]
+**Layer:** Infrastructure
+**Priority:** High
+
+**Description:** Handle failed tasks with retry logic and DLQ for manual intervention.
+
+**Acceptance Criteria:**
+- [ ] `Cerebelum.Infrastructure.DLQ` GenServer
+- [ ] Automatic retry with exponential backoff (1s, 2s, 4s, ...)
+- [ ] Move tasks to DLQ after 3 failed attempts
+- [ ] Persist DLQ items to database (dlq_items table)
+- [ ] Emit DLQ events to event store
+- [ ] API to list DLQ items
+- [ ] API to manually retry DLQ item
+- [ ] API to mark DLQ item as resolved
+- [ ] Metrics for DLQ size
+- [ ] Alerts when DLQ size exceeds threshold
+
+**Implementation Notes:**
+```elixir
+defmodule Cerebelum.Infrastructure.DLQ do
+  use GenServer
+
+  def handle_failed_task(task, error, attempts) do
+    if attempts >= 3 do
+      move_to_dlq(task, error, attempts)
+    else
+      schedule_retry(task, backoff_delay(attempts))
+    end
+  end
+
+  defp move_to_dlq(task, error, attempts) do
+    dlq_item = %DLQItem{
+      task_id: task.id,
+      execution_id: task.execution_id,
+      workflow_id: task.workflow_id,
+      step_name: task.step_name,
+      error: error,
+      attempts: attempts,
+      inserted_at: DateTime.utc_now()
+    }
+
+    # Persist to database
+    Repo.insert!(dlq_item)
+
+    # Emit event
+    EventStore.emit(%DLQEvent{
+      task_id: task.id,
+      execution_id: task.execution_id,
+      error: error,
+      attempts: attempts
+    })
+
+    # Update metrics
+    Telemetry.execute([:dlq, :item_added], %{count: 1})
+
+    # Alert if DLQ size exceeds threshold
+    if get_dlq_size() > 100 do
+      Alert.send_to_oncall("DLQ size: #{get_dlq_size()}")
+    end
+  end
+
+  defp backoff_delay(attempts) do
+    # Exponential backoff: 1s, 2s, 4s, 8s, ...
+    :math.pow(2, attempts - 1) * 1000
+  end
+
+  def retry_dlq_item(dlq_item_id) do
+    dlq_item = Repo.get!(DLQItem, dlq_item_id)
+    task = reconstruct_task(dlq_item)
+    TaskRouter.enqueue_task(task)
+    Repo.delete!(dlq_item)
+  end
+end
+```
+
+**Testing Requirements:**
+- Unit test: Failed task retried with exponential backoff
+- Unit test: Task moved to DLQ after 3 failures
+- Unit test: DLQ item persisted to database
+- Unit test: Manual retry from DLQ works
+- Integration test: Full retry flow
+- Integration test: DLQ alert triggered
+
+---
+
+### [P8.9] Implement SDK Generator Tool
+
+**Estimate:** 10 days
+**Dependencies:** [P8.5, P8.6, P8.7]
+**Layer:** Tooling
+**Priority:** Medium
+
+**Description:** Code generator to scaffold SDKs for new languages (Priority 3: Swift, Rust, Go, etc.).
+
+**Acceptance Criteria:**
+- [ ] CLI tool: `cerebelum-cli generate-sdk`
+- [ ] Language templates for: Swift, Rust, Go, Ruby, PHP, C#
+- [ ] Generate project structure (70% complete)
+- [ ] Generate gRPC stubs from worker_service.proto
+- [ ] Generate Blueprint serializer skeleton
+- [ ] Generate LocalExecutor skeleton
+- [ ] Generate DistributedExecutor skeleton
+- [ ] Generate Worker skeleton
+- [ ] Generate test templates
+- [ ] Generate example workflows
+- [ ] Generate README with TODOs
+- [ ] Output: ready-to-customize SDK project
+
+**Implementation Notes:**
+```bash
+# Usage
+$ cerebelum-cli generate-sdk --language=swift --output=./cerebelum-sdk-swift
+
+Generating Swift SDK...
+✅ Created project structure
+✅ Generated gRPC stubs from worker_service.proto
+✅ Created Blueprint serializer skeleton
+✅ Created LocalExecutor skeleton
+✅ Created DistributedExecutor skeleton
+✅ Created Worker skeleton
+✅ Created test templates
+✅ Created example workflows
+✅ Created README with implementation guide
+
+Next steps:
+1. Implement language-specific DSL syntax (SwiftUI ResultBuilder style)
+2. Add Swift-specific type safety (generics with associated types)
+3. Implement Swift-idiomatic error handling (Result<T,E>)
+4. Write unit tests (aim for >90% coverage)
+5. Write integration tests with Core BEAM
+6. Run certification test suite: cerebelum-cli certify-sdk ./cerebelum-sdk-swift
+```
+
+**Templates:**
+- Swift: Use ResultBuilders for DSL, generics with associated types
+- Rust: Fluent builder API, traits, Result<T,E>
+- Go: Functional options, interfaces, explicit error handling
+- Ruby: DSL with blocks, method_missing for type safety
+- PHP: Fluent interface, type declarations (PHP 8+)
+- C#: LINQ-style fluent API, generics, async/await
+
+**Testing Requirements:**
+- Unit test: Generate Swift SDK structure
+- Unit test: Generated code compiles without errors
+- Manual test: Implement custom step in generated SDK
+- Manual test: Generated SDK passes certification suite
+
+---
+
+### [P8.10] Implement SDK Certification Test Suite
+
+**Estimate:** 5 days
+**Dependencies:** [P8.9]
+**Layer:** Tooling
+**Priority:** Medium
+
+**Description:** Automated test suite to certify community-contributed SDKs.
+
+**Acceptance Criteria:**
+- [ ] CLI tool: `cerebelum-cli certify-sdk <path>`
+- [ ] Test: SDK can define simple workflow (hello world)
+- [ ] Test: SDK can define complex workflow (with diverge/branch)
+- [ ] Test: SDK generates valid Blueprint JSON
+- [ ] Test: LocalExecutor executes workflow correctly
+- [ ] Test: DistributedExecutor connects to Core via gRPC
+- [ ] Test: Worker registers and polls for tasks
+- [ ] Test: Worker executes step and returns result
+- [ ] Test: SDK handles errors correctly
+- [ ] Test: SDK serializes/deserializes data correctly (JSON + Protobuf)
+- [ ] Output: certification report with pass/fail for each test
+- [ ] If all tests pass: generate certificate badge
+
+**Implementation Notes:**
+```bash
+$ cerebelum-cli certify-sdk ./cerebelum-sdk-swift
+
+Running SDK Certification Suite...
+
+✅ Test 1: Simple workflow definition
+✅ Test 2: Complex workflow with diverge/branch
+✅ Test 3: Blueprint JSON generation
+✅ Test 4: Blueprint validation by Core
+✅ Test 5: LocalExecutor execution
+✅ Test 6: DistributedExecutor gRPC connection
+✅ Test 7: Worker registration
+✅ Test 8: Worker task polling
+✅ Test 9: Worker task execution
+✅ Test 10: Error handling
+✅ Test 11: JSON serialization
+✅ Test 12: Protobuf serialization
+
+All tests passed! 🎉
+
+Certificate generated: ./cerebelum-sdk-swift/CERTIFICATE.md
+
+This SDK is certified for use with Cerebelum Core v1.0.x
+```
+
+**Testing Requirements:**
+- Unit test: Certification suite runs all tests
+- Unit test: Failed test generates detailed report
+- Integration test: Certify Kotlin SDK (should pass)
+- Integration test: Certify TypeScript SDK (should pass)
+- Integration test: Certify Python SDK (should pass)
+
+---
+
+### [P8.11] Write SDK Documentation & Examples
+
+**Estimate:** 8 days
+**Dependencies:** [P8.5, P8.6, P8.7]
+**Layer:** Documentation
+**Priority:** High
+
+**Description:** Comprehensive documentation and examples for SDK users.
+
+**Acceptance Criteria:**
+- [ ] SDK Overview guide (what are SDKs, why use them)
+- [ ] Quick Start guide for each SDK (Kotlin, TypeScript, Python)
+- [ ] Local Mode guide (dev/test workflow)
+- [ ] Distributed Mode guide (production setup)
+- [ ] Worker deployment guide (Docker, Kubernetes)
+- [ ] Type Safety guide (how compile-time checking works)
+- [ ] Error Handling guide (diverge patterns)
+- [ ] Serialization guide (JSON vs Protobuf)
+- [ ] Performance tuning guide
+- [ ] Migration guide (from Elixir Core to SDK)
+- [ ] Example: Order Processing Workflow (in all 3 languages)
+- [ ] Example: Data Pipeline Workflow
+- [ ] Example: Human-in-the-Loop Workflow
+- [ ] API reference (auto-generated from code)
+- [ ] Troubleshooting guide
+
+**Implementation Notes:**
+```markdown
+# Directory structure
+docs/sdk/
+├── overview.md
+├── quick-start-kotlin.md
+├── quick-start-typescript.md
+├── quick-start-python.md
+├── local-mode.md
+├── distributed-mode.md
+├── worker-deployment.md
+├── type-safety.md
+├── error-handling.md
+├── serialization.md
+├── performance.md
+├── migration-guide.md
+├── examples/
+│   ├── order-processing/
+│   │   ├── kotlin/
+│   │   ├── typescript/
+│   │   └── python/
+│   ├── data-pipeline/
+│   └── hitl-workflow/
+└── troubleshooting.md
+```
+
+**Testing Requirements:**
+- Manual review: Documentation is clear and accurate
+- Manual test: Follow each Quick Start guide end-to-end
+- Manual test: Deploy worker using deployment guide
+- Manual test: Run all examples successfully
+- Technical review: External developer validates docs
+
+---
+
+### [P8.12] Integration Testing (Core + SDKs)
+
+**Estimate:** 6 days
+**Dependencies:** [P8.5, P8.6, P8.7, P8.8]
+**Layer:** All
+**Priority:** High
+
+**Description:** End-to-end integration tests with Core BEAM and all SDKs.
+
+**Acceptance Criteria:**
+- [ ] Test: Kotlin SDK end-to-end workflow execution
+- [ ] Test: TypeScript SDK end-to-end workflow execution
+- [ ] Test: Python SDK end-to-end workflow execution
+- [ ] Test: Mixed-language workflow (Kotlin step → TypeScript step)
+- [ ] Test: Worker failure and task reassignment
+- [ ] Test: Worker heartbeat timeout detection
+- [ ] Test: DLQ flow (task fails 3 times → DLQ → manual retry)
+- [ ] Test: Sticky routing (same execution → same worker)
+- [ ] Test: Long-polling timeout behavior
+- [ ] Test: Blueprint validation errors
+- [ ] Test: Protobuf serialization end-to-end
+- [ ] Load test: 1K concurrent workflows across 100 workers
+- [ ] Load test: Worker failure during high load
+- [ ] Performance benchmark: Local Mode overhead <5%
+- [ ] Performance benchmark: Distributed Mode latency <150ms p99
+
+**Testing Requirements:**
+- E2E test: Start Core BEAM + 3 SDK workers + execute workflow
+- E2E test: Kill worker mid-execution, verify task reassignment
+- E2E test: Submit invalid blueprint, verify error message
+- Load test: 100 workers, 10K workflows/sec for 1 minute
+- Performance test: Compare Local vs Distributed execution times
+
+---
+
 ## Dependencies Graph
 
 ```mermaid
@@ -3364,9 +4248,9 @@ graph TD
 
 ## Summary
 
-**Total Tasks:** 76 tasks (added P2.9, P2.10, P6.6 for scalability requirements)
-**Estimated Duration:** 190-230 developer days
-**Phases:** 7
+**Total Tasks:** 88 tasks (76 Core + 12 SDK tasks)
+**Estimated Duration:** 250-305 developer days (190-230 Core + 60-75 SDK)
+**Phases:** 8
 
 **Critical Path:**
 1. P1.1 → P1.2 → P1.3 → P1.4 (DSL Foundation)
@@ -3376,6 +4260,9 @@ graph TD
 5. P4.1 → P4.2 → P4.3 → P4.5 (Event Sourcing with Partitioning)
 6. P5.1 → P5.4 (Time-Travel)
 7. P6.6 (Database Metrics)
+8. P8.1 → P8.2 → P8.3 → P8.4 (gRPC Infrastructure)
+9. P8.5, P8.6, P8.7 (SDKs - can be parallelized)
+10. P8.12 (SDK Integration Testing)
 
 **Key Milestones:**
 - **M1 (Day 30):** Workflow DSL working, can write workflows
@@ -3384,14 +4271,20 @@ graph TD
 - **M4 (Day 141):** Event sourcing with 64-partition database, can persist 640K events/sec
 - **M5 (Day 166):** Time-travel debugging working
 - **M6 (Day 199):** Advanced features complete (parallel, sleep, HITL, database metrics)
-- **M7 (Day 219):** Testing and documentation complete
+- **M7 (Day 219):** Testing and documentation complete (Elixir Core)
+- **M8 (Day 244):** gRPC service ready, worker infrastructure operational
+- **M9 (Day 289):** Kotlin, TypeScript, and Python SDKs complete (parallel development)
+- **M10 (Day 305):** Multi-language SDK support fully operational with integration tests passing
 
 **Architectural Highlights:**
 - **Phase 2** includes Horde (distributed supervisor/registry) - same code scales from 1 to 1000 nodes
 - **3-Level Caching** (Persistent Term + ETS + Horde) - 10ns to 1ms read latency
 - **64-Partition Database** - 640K events/sec throughput with automatic routing
+- **Phase 8** adds multi-language SDKs - Kotlin, TypeScript, Python with native syntax per language
+- **Dual-Mode Execution** - Local (dev/test, zero infra) + Distributed (prod, gRPC workers)
+- **Type Safety** - Compile-time verification via generics, phantom types, language-specific features
 - **No migration required** when scaling - architecture is distributed from day 1
-- **Competitive advantage** vs Temporal.io: simpler operations, same scalability, better observability
+- **Competitive advantage** vs Temporal.io: simpler operations, same scalability, better observability, more language SDKs
 
 **Next Steps:**
 1. Review and approve this implementation plan

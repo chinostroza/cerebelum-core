@@ -675,9 +675,493 @@ end
 
 ---
 
+### Requirement 35: Multi-Language SDK Support
+
+**User Story:** As a developer using Kotlin/TypeScript/Python/etc., I want to define and execute workflows using my preferred language's native syntax so that I can leverage Cerebelum without learning Elixir.
+
+**Philosophy:** DX-First - The SDK must feel native to each ecosystem, not a "Cerebelum style" imposed on all languages.
+
+#### Acceptance Criteria - Core Principles
+
+1. WHEN developer uses SDK THEN syntax SHALL feel native to their language ecosystem
+2. IF developer references non-existent step THEN IDE/compiler SHALL show error before runtime
+3. WHILE defining workflows THEN developer SHALL NEVER use strings to reference steps
+4. WHEN developer writes step function THEN IDE SHALL autocomplete input/output types
+5. WHEN workflow compiles THEN type mismatches SHALL be caught before execution
+
+#### Acceptance Criteria - Kotlin SDK (Priority 1)
+
+6. WHEN Kotlin developer defines workflow THEN they SHALL use Jetpack Compose-style lambda with receiver syntax
+7. WHEN Kotlin developer references step function THEN they SHALL use `::functionName` syntax (KFunction)
+8. WHEN Kotlin developer writes `branch(on = validate)` THEN IDE SHALL autocomplete `validate` variable (StepRef)
+9. WHEN Kotlin developer writes condition `{ it.amount > 1000 }` THEN `it` SHALL be typed as Order (not Any)
+10. WHEN Kotlin developer compiles workflow THEN Kotlin compiler SHALL verify all step references exist
+11. IF Kotlin developer tries `skipTo(nonExistent)` THEN IDE SHALL show "Unresolved reference: nonExistent"
+12. WHEN Kotlin developer runs workflow locally THEN no infrastructure SHALL be required
+13. WHEN Kotlin developer runs workflow distributed THEN worker SHALL connect via gRPC to Core BEAM
+
+**Example:**
+```kotlin
+val orderFlow = workflow("order-flow") {
+    val validate = step<OrderInput, Order>(::validateOrder)
+    val payment = step<Order, Payment>(::chargePayment)
+    val notify = step<Payment, Unit>(::sendNotification)
+
+    timeline {
+        +validate  // StepRef<OrderInput, Order>
+        +payment   // StepRef<Order, Payment>
+        +notify    // StepRef<Payment, Unit>
+    }
+
+    diverge(on = payment) {
+        pattern<PaymentError.Timeout> { retry(maxAttempts = 3) }
+        pattern<PaymentError.InsufficientFunds> { failed() }
+    }
+
+    branch(on = validate) {
+        condition { it.amount > 10000 } then skipTo(manualReview)
+        //          ^^ 'it' is typed as Order, IDE autocompletes .amount
+        condition { it.fraudScore > 0.9 } then backTo(validate)
+        otherwise { continue() }
+    }
+}
+
+// Step functions
+fun validateOrder(input: OrderInput): Order { /* ... */ }
+fun chargePayment(ctx: Context, order: Order): Payment { /* ... */ }
+fun sendNotification(ctx: Context, payment: Payment) { /* ... */ }
+```
+
+#### Acceptance Criteria - TypeScript SDK (Priority 1)
+
+14. WHEN TypeScript developer defines workflow THEN they SHALL use builder pattern with type inference
+15. WHEN TypeScript developer passes step function THEN TypeScript SHALL infer input/output types
+16. WHEN TypeScript developer writes `diverge` block THEN pattern matching SHALL be type-safe
+17. WHEN TypeScript developer compiles code THEN `tsc` SHALL verify all step references exist
+18. IF TypeScript developer tries `skipTo("nonExistent")` THEN TypeScript compiler SHALL error
+19. WHEN TypeScript developer uses VSCode THEN IntelliSense SHALL autocomplete step names
+20. WHEN TypeScript developer runs `npm test` THEN local execution SHALL work without Docker
+
+**Example:**
+```typescript
+const orderFlow = workflow({
+  id: "order-flow",
+  steps: {
+    validateOrder: (input: OrderInput): Order => { /* ... */ },
+    chargePayment: (ctx: Context, order: Order): Payment => { /* ... */ },
+    sendNotification: (ctx: Context, payment: Payment): void => { /* ... */ }
+  },
+  timeline: ["validateOrder", "chargePayment", "sendNotification"],
+  diverge: {
+    chargePayment: [
+      { pattern: { type: "timeout" }, action: retry({ maxAttempts: 3 }) },
+      { pattern: { type: "insufficient_funds" }, action: failed() }
+    ]
+  },
+  branch: {
+    validateOrder: [
+      { condition: (order) => order.amount > 10000, action: skipTo("manualReview") },
+      { condition: (order) => order.fraudScore > 0.9, action: backTo("validateOrder") }
+    ]
+  }
+});
+```
+
+#### Acceptance Criteria - Python SDK (Priority 2)
+
+21. WHEN Python developer defines workflow THEN they SHALL use context managers (`with` statement)
+22. WHEN Python developer references step THEN they SHALL use function object (not string)
+23. WHEN Python developer uses type hints THEN `mypy` SHALL verify step signatures
+24. WHEN Python developer writes condition THEN lambda SHALL receive typed parameter
+25. WHEN Python developer uses IDE THEN PyCharm/VSCode SHALL autocomplete step attributes
+26. WHEN Python developer runs `pytest` THEN local execution SHALL work without containers
+
+**Example:**
+```python
+order_flow = WorkflowBuilder("order-flow")
+
+with order_flow.timeline() as tl:
+    tl.step(validate_order)
+    tl.step(charge_payment)
+    tl.step(send_notification)
+
+with order_flow.diverge(on=charge_payment) as div:
+    div.pattern(PaymentError.Timeout).then(retry(max_attempts=3))
+    div.pattern(PaymentError.InsufficientFunds).then(failed())
+
+with order_flow.branch(on=validate_order) as br:
+    br.condition(lambda order: order.amount > 10000).then(skip_to(manual_review))
+    br.condition(lambda order: order.fraud_score > 0.9).then(back_to(validate_order))
+
+def validate_order(input: OrderInput) -> Order: ...
+def charge_payment(ctx: Context, order: Order) -> Payment: ...
+def send_notification(ctx: Context, payment: Payment) -> None: ...
+```
+
+#### Acceptance Criteria - Execution Modes
+
+27. WHEN developer runs workflow in Local Mode THEN execution SHALL happen in-process
+28. WHEN developer runs workflow in Local Mode THEN no external infrastructure SHALL be required
+29. WHEN developer runs workflow in Local Mode THEN debugger SHALL work normally
+30. WHEN developer switches to Distributed Mode THEN same workflow code SHALL work without changes
+31. WHEN workflow runs in Distributed Mode THEN Core BEAM SHALL orchestrate execution
+32. WHEN workflow runs in Distributed Mode THEN worker SHALL execute step functions
+33. WHEN workflow runs in Distributed Mode THEN results SHALL be sent back via gRPC
+
+**Local Mode:**
+```kotlin
+val executor = LocalExecutor()
+val result = executor.execute(orderFlow, OrderInput(...))
+// Runs in same process, instant feedback, breakpoints work
+```
+
+**Distributed Mode:**
+```kotlin
+val executor = DistributedExecutor(
+    coreUrl = "grpc://cerebelum.prod:9090"
+)
+val result = executor.execute(orderFlow, OrderInput(...))
+// Worker registers with Core, polls for tasks, executes steps
+```
+
+#### Acceptance Criteria - Type Safety
+
+34. WHEN developer defines step `step<A, B>(fn)` THEN function signature SHALL be `fn: (A) -> B` or `fn: (Context, A) -> B`
+35. IF developer passes wrong signature THEN compiler SHALL error at compile-time
+36. WHEN developer chains steps in timeline THEN compiler SHALL verify output type matches next input type
+37. WHEN developer writes `skipTo(target)` THEN `target` SHALL be typed as StepRef (not string)
+38. WHEN developer uses phantom types THEN runtime SHALL have zero overhead
+
+**Type Verification Examples:**
+```kotlin
+// ✅ Correct
+val step1 = step<Int, String>(::processInt)       // (Int) -> String
+val step2 = step<String, Boolean>(::processString) // (String) -> Boolean
+
+timeline { +step1; +step2 }  // ✅ String matches String
+
+// ❌ Compile error
+val step3 = step<Boolean, Double>(::processDouble)
+timeline { +step1; +step3 }  // ❌ String doesn't match Boolean
+```
+
+#### Acceptance Criteria - Worker Architecture
+
+39. WHEN worker starts THEN it SHALL register with Core BEAM via gRPC
+40. WHEN worker registers THEN it SHALL send: worker_id, language, version, capabilities
+41. WHEN worker is idle THEN it SHALL long-poll Core for tasks (30s timeout)
+42. WHEN Core assigns task THEN worker SHALL execute step function
+43. WHEN step completes THEN worker SHALL send result back to Core via gRPC
+44. WHEN worker crashes THEN Core SHALL reassign task to another worker
+45. WHEN worker is healthy THEN it SHALL send heartbeat every 10 seconds
+
+**Worker Protocol:**
+```protobuf
+service WorkerService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc PollForTask(PollRequest) returns (Task);
+  rpc SubmitResult(TaskResult) returns (Ack);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+```
+
+#### Acceptance Criteria - Serialization
+
+46. WHEN step result is simple type THEN JSON SHALL be used by default
+47. WHEN step result is complex object THEN JSON SHALL serialize all fields
+48. IF developer annotates type with @ProtoSerializable THEN Protobuf SHALL be used
+49. WHEN using Protobuf THEN serialization SHALL be 3x faster than JSON
+50. WHEN using JSON THEN developer SHALL NOT need schema definition
+
+**Serialization Strategy:**
+```kotlin
+// Default: JSON (zero config)
+data class Order(val id: String, val amount: Double)
+val result = execute(step, order)  // Serialized as JSON
+
+// Opt-in: Protobuf (performance critical)
+@ProtoSerializable
+data class LargeDataset(val records: List<Record>)
+val result = execute(step, dataset)  // Serialized as Protobuf
+```
+
+#### Acceptance Criteria - Error Handling
+
+51. WHEN step throws exception THEN worker SHALL catch and send error to Core
+52. WHEN Core receives error THEN it SHALL evaluate `diverge` patterns
+53. IF error matches pattern THEN Core SHALL execute corresponding action
+54. IF error doesn't match any pattern THEN workflow SHALL fail
+55. WHEN workflow fails THEN all events SHALL be persisted to event log
+56. WHEN developer inspects failed workflow THEN they SHALL see full stack trace
+
+#### Acceptance Criteria - Performance
+
+57. WHEN single worker handles 1K workflows/sec THEN CPU SHALL be <50%
+58. WHEN 100 workers handle 100K workflows/sec THEN p99 latency SHALL be <150ms
+59. WHEN using Local Mode THEN overhead SHALL be <1ms vs direct function call
+60. WHEN using Distributed Mode THEN gRPC overhead SHALL be <10ms per step
+
+#### Acceptance Criteria - Developer Experience
+
+61. WHEN developer installs SDK THEN single command SHALL set up everything
+62. WHEN developer runs example THEN it SHALL work without configuration
+63. WHEN developer reads docs THEN examples SHALL be in their language
+64. WHEN developer gets compile error THEN message SHALL be clear and actionable
+65. WHEN developer debugs workflow THEN they SHALL see readable event log
+
+**Installation:**
+```bash
+# Kotlin
+./gradlew add cerebelum-sdk
+
+# TypeScript
+npm install @cerebelum/sdk
+
+# Python
+pip install cerebelum-sdk
+```
+
+#### Acceptance Criteria - Blueprint Serialization
+
+66. WHEN workflow compiles THEN SDK SHALL generate Blueprint JSON
+67. WHEN Blueprint is sent to Core THEN it SHALL contain: timeline, diverges, branches, metadata
+68. WHEN Core receives Blueprint THEN it SHALL validate structure
+69. WHEN Core validates Blueprint THEN it SHALL check: step references, action targets, cycle detection
+70. IF Blueprint is invalid THEN Core SHALL return validation errors before execution
+
+**Blueprint Structure:**
+```json
+{
+  "id": "order-flow",
+  "version": "1.0.0",
+  "timeline": ["validate", "payment", "notify"],
+  "diverges": {
+    "payment": [
+      {"pattern": {"type": "timeout"}, "action": {"type": "retry", "max_attempts": 3}}
+    ]
+  },
+  "branches": {
+    "validate": [
+      {"condition": "amount > 10000", "action": {"type": "skip_to", "target": "manual_review"}}
+    ]
+  },
+  "steps_metadata": {
+    "validate": {"input_type": "OrderInput", "output_type": "Order"}
+  }
+}
+```
+
+#### Acceptance Criteria - Worker Pooling
+
+71. WHEN multiple workers register THEN Core SHALL maintain worker pool
+72. WHEN Core assigns task THEN it SHALL use pull-based model (workers poll)
+73. WHEN worker A executes step1 THEN Core SHOULD assign step2 to same worker (sticky routing)
+74. WHEN worker is busy THEN Core SHALL NOT assign new tasks to it
+75. WHEN worker pool is empty THEN Core SHALL queue tasks until worker available
+
+**Sticky Routing Benefits:**
+- Cache locality: Worker reuses loaded classes/modules
+- Connection reuse: Same gRPC stream
+- Memory efficiency: State can be kept in worker memory
+
+#### Acceptance Criteria - Fault Tolerance
+
+76. WHEN worker misses 3 heartbeats THEN Core SHALL mark it as dead
+77. WHEN worker is marked dead THEN Core SHALL reassign its tasks
+78. WHEN task execution exceeds timeout THEN Core SHALL cancel and retry
+79. WHEN task fails 3 times THEN Core SHALL move it to Dead Letter Queue (DLQ)
+80. WHEN workflow is in DLQ THEN developer SHALL be able to retry manually
+
+**Timeout Strategy:**
+```kotlin
+val step = step<Input, Output>(::process) {
+    timeout = 30.seconds
+    retries = 3
+    backoff = exponential(initial = 1.second, max = 10.seconds)
+}
+```
+
+#### Acceptance Criteria - Multi-Language Interop
+
+81. WHEN workflow uses Kotlin SDK THEN steps CAN call TypeScript workers
+82. WHEN step result is serialized THEN any language worker SHALL deserialize correctly
+83. WHEN error occurs in Python step THEN Kotlin workflow SHALL handle via diverge
+84. WHEN developer mixes languages THEN type safety SHALL be enforced at Blueprint level
+
+**Cross-Language Example:**
+```kotlin
+// Kotlin workflow definition
+val flow = workflow("hybrid-flow") {
+    val step1 = step<Input, Middle>(::kotlinFunction)  // Kotlin worker
+    val step2 = step<Middle, Output>(::tsFunction)     // TypeScript worker
+    timeline { +step1; +step2 }
+}
+```
+
+#### Acceptance Criteria - Testing
+
+85. WHEN developer writes unit test THEN they SHALL use Local Mode
+86. WHEN developer tests step function THEN they SHALL call it directly
+87. WHEN developer tests full workflow THEN LocalExecutor SHALL provide instant feedback
+88. WHEN developer writes integration test THEN they SHALL use TestWorker with Core
+89. WHEN test fails THEN error message SHALL show exact step and input that failed
+
+**Testing Examples:**
+```kotlin
+// Unit test: Test step function directly
+@Test
+fun `validateOrder rejects invalid input`() {
+    val result = validateOrder(OrderInput(amount = -100))
+    assertEquals(ValidationError.NegativeAmount, result)
+}
+
+// Integration test: Test full workflow locally
+@Test
+fun `orderFlow processes valid order`() {
+    val executor = LocalExecutor()
+    val result = executor.execute(orderFlow, validInput)
+    assertTrue(result.isSuccess)
+}
+```
+
+#### Acceptance Criteria - Observability
+
+90. WHEN workflow executes THEN Core SHALL emit events: StepStarted, StepCompleted, StepFailed
+91. WHEN developer queries workflow THEN they SHALL see current state and history
+92. WHEN step fails THEN event SHALL include: error message, stack trace, input data
+93. WHEN developer uses dashboard THEN they SHALL see: active workflows, queue depth, worker health
+
+---
+
+### Requirement 36: SDK Language Support Roadmap
+
+**User Story:** As Cerebelum maintainer, I want a clear roadmap for SDK language support so that we prioritize based on ecosystem adoption and engineering effort.
+
+#### Acceptance Criteria - Priority 1 Languages (MVP)
+
+1. WHEN Cerebelum v1.0 launches THEN Kotlin SDK SHALL be production-ready
+2. WHEN Cerebelum v1.0 launches THEN TypeScript SDK SHALL be production-ready
+3. WHEN developer uses Kotlin/TypeScript SDK THEN all features SHALL be supported: timeline, diverge, branch, metadata
+4. WHEN developer reports bug in Priority 1 SDK THEN fix SHALL be released within 1 week
+
+**Rationale:**
+- Kotlin: Android/JVM ecosystem, strong typing, coroutines
+- TypeScript: Web/Node.js ecosystem, largest developer base
+
+#### Acceptance Criteria - Priority 2 Languages (Post-MVP)
+
+5. WHEN Cerebelum v1.1 launches THEN Python SDK SHALL be production-ready
+6. WHEN Cerebelum v1.2 launches THEN Go SDK SHALL be production-ready
+7. WHEN Priority 2 SDK is released THEN documentation SHALL include migration guide from Priority 1
+
+**Rationale:**
+- Python: ML/Data Science ecosystem, simple syntax
+- Go: Backend services, performance-critical systems
+
+#### Acceptance Criteria - Priority 3 Languages (Future)
+
+8. WHEN community requests Swift SDK THEN team SHALL evaluate based on: demand, engineering effort, maintainability
+9. WHEN Priority 3 SDK is developed THEN it MAY be community-maintained
+10. WHEN community contributes SDK THEN it SHALL pass same test suite as official SDKs
+
+**Potential Languages:**
+- Swift: iOS ecosystem
+- Rust: Systems programming, safety guarantees
+- Ruby: Rails ecosystem
+- PHP: Web ecosystem
+- C#: .NET ecosystem
+
+#### Acceptance Criteria - SDK Feature Parity
+
+11. WHEN new feature is added to Core THEN Priority 1 SDKs SHALL support it within 2 releases
+12. WHEN new feature is added to Core THEN Priority 2 SDKs SHALL support it within 4 releases
+13. WHEN SDK lacks feature THEN documentation SHALL clearly state limitation
+
+#### Acceptance Criteria - SDK Maintenance
+
+14. WHEN Core releases new version THEN SDK compatibility SHALL be tested automatically
+15. WHEN breaking change occurs in Core THEN SDKs SHALL release major version
+16. WHEN SDK has security vulnerability THEN patch SHALL be released within 48 hours
+
+#### Acceptance Criteria - Community SDKs
+
+17. WHEN community wants to create SDK THEN template repository SHALL be available
+18. WHEN community SDK passes certification THEN it SHALL be listed in official docs
+19. WHEN community SDK is abandoned THEN it SHALL be marked as deprecated
+
+**Certification Requirements:**
+- Passes standard test suite (100+ tests)
+- Documentation with examples
+- CI/CD pipeline with automated tests
+- Semantic versioning
+- Changelog
+
+#### Acceptance Criteria - SDK Generator
+
+20. WHEN new language is prioritized THEN SDK generator SHALL scaffold basic structure
+21. WHEN SDK generator runs THEN it SHALL create: project structure, Blueprint serializer, gRPC client, tests
+22. WHEN SDK generator completes THEN 70% of SDK SHALL be ready (remaining 30% is language-specific ergonomics)
+
+**Generator Output:**
+```
+cerebelum-sdk-<lang>/
+├── src/
+│   ├── workflow/          # Blueprint builder
+│   ├── executor/          # Local + Distributed executors
+│   ├── grpc/             # Generated gRPC stubs
+│   └── serialization/    # JSON + Protobuf
+├── tests/
+│   ├── unit/
+│   └── integration/
+├── examples/
+│   ├── local-mode.xxx
+│   └── distributed-mode.xxx
+├── docs/
+│   └── README.md
+└── build configuration
+```
+
+#### Acceptance Criteria - Language-Specific Ergonomics
+
+23. WHEN SDK targets Kotlin THEN it SHALL use: extension functions, sealed classes, coroutines
+24. WHEN SDK targets TypeScript THEN it SHALL use: discriminated unions, async/await, generics
+25. WHEN SDK targets Python THEN it SHALL use: type hints, dataclasses, context managers
+26. WHEN SDK targets Go THEN it SHALL use: interfaces, goroutines, error handling conventions
+27. WHEN SDK targets Swift THEN it SHALL use: result builders, async/await, value types
+28. WHEN SDK targets Rust THEN it SHALL use: traits, Result<T,E>, zero-cost abstractions
+
+#### Acceptance Criteria - Version Compatibility Matrix
+
+29. WHEN SDK version X is released THEN it SHALL document compatible Core versions
+30. WHEN Core version Y is released THEN it SHALL document compatible SDK versions
+31. WHEN incompatibility exists THEN error message SHALL guide developer to correct versions
+
+**Compatibility Matrix Example:**
+| Core Version | Kotlin SDK | TypeScript SDK | Python SDK | Go SDK |
+|--------------|------------|----------------|------------|--------|
+| 1.0.x        | 1.0.x      | 1.0.x          | -          | -      |
+| 1.1.x        | 1.1.x      | 1.1.x          | 1.0.x      | -      |
+| 1.2.x        | 1.2.x      | 1.2.x          | 1.1.x      | 1.0.x  |
+
+#### Acceptance Criteria - Performance Benchmarks
+
+32. WHEN SDK is released THEN benchmark suite SHALL measure: throughput, latency, memory usage
+33. WHEN benchmark runs THEN it SHALL compare: Local Mode vs Distributed Mode vs baseline (direct function calls)
+34. WHEN performance regresses >10% THEN release SHALL be blocked until fixed
+
+**Benchmark Targets:**
+- Local Mode overhead: <5% vs direct function call
+- Distributed Mode throughput: >1K workflows/sec per worker
+- Memory usage: <50MB per worker (idle)
+- Startup time: <2s (worker registration)
+
+---
+
 ## Summary
 
-Cerebelum Core provides **16 core requirements** for general-purpose workflow orchestration:
+Cerebelum provides **18 comprehensive requirements** for multi-language workflow orchestration:
+
+### Core Orchestration (Requirements 1-34)
 
 1. **Workflow Management** (Req 1, 11, 34) - Definition, execution, graph-based state
 2. **Deterministic System** (Req 2, 3, 4, 5) - Time, random, memoization, versioning
@@ -688,6 +1172,32 @@ Cerebelum Core provides **16 core requirements** for general-purpose workflow or
 7. **Performance** (Req 20) - Scalability, concurrency
 8. **Developer Experience** (Req 21) - Tooling, setup
 
-**Total Acceptance Criteria:** 128 testable requirements in EARS format
+**Core Acceptance Criteria:** 128 testable requirements in EARS format
+
+### Multi-Language SDKs (Requirements 35-36)
+
+9. **SDK Support** (Req 35) - Kotlin, TypeScript, Python, Go and more
+   - Native syntax per language (Compose-style for Kotlin, Builder for TypeScript, etc.)
+   - Dual-mode execution (Local in-process + Distributed via gRPC)
+   - Type-safe step references (no strings, IDE autocomplete)
+   - Worker architecture with pull-based task distribution
+   - Serialization (JSON default + Protobuf opt-in)
+   - Fault tolerance (Heartbeat + Timeout + Retry + DLQ)
+
+10. **SDK Roadmap** (Req 36) - Language prioritization and maintenance
+    - Priority 1 (MVP): Kotlin, TypeScript
+    - Priority 2 (Post-MVP): Python, Go
+    - Priority 3 (Future): Swift, Rust, Ruby, PHP, C#
+    - SDK generator for 70% automation
+    - Community SDK certification program
+
+**SDK Acceptance Criteria:** 127 testable requirements (93 + 34) in EARS format
+
+### Totals
+
+- **Total Requirements:** 18 (16 Core + 2 SDK)
+- **Total Acceptance Criteria:** 255 (128 Core + 127 SDK)
+- **Architectural Modes:** Code-First (Elixir) + SDK-Based (Multi-Language)
+- **Execution Modes:** Local (in-process, dev/test) + Distributed (gRPC, production)
 
 **No AI Dependencies:** This module is pure orchestration. AI features require `cerebelum-ai` module.

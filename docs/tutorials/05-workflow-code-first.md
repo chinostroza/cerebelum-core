@@ -88,18 +88,29 @@ defmodule ProcessOrderWorkflow do
   end
 
   @doc "Handle payment failure"
-  def handle_payment_error(state) do
+  def handle_payment_error(ctx, state) do
     EmailService.send_payment_failed(state.user_id)
-    {:ok, %{state | status: :payment_failed}}
+    %{state | status: :payment_failed}
   end
 
-  # Define el workflow graph usando funciones
-  workflow do
-    edge &start/1 -> &validate_order/1
-    edge &validate_order/1 -> &charge_card/1, when: {:ok, _}
-    edge &validate_order/1 -> &handle_payment_error/1, when: {:error, _}
-    edge &charge_card/1 -> &send_confirmation/1, when: {:ok, _}
-    edge &charge_card/1 -> &handle_payment_error/1, when: {:error, _}
+  # Define el workflow usando sintaxis Compose-style
+  workflow() do
+    timeline() do
+      start()
+      |> validate_order()
+      |> charge_card()
+      |> send_confirmation()
+      |> done()
+    end
+
+    diverge(validate_order) do
+      :out_of_stock -> handle_payment_error() |> failed()
+    end
+
+    diverge(charge_card) do
+      :payment_failed -> handle_payment_error() |> failed()
+      :timeout -> retry(3, delay: 2000) |> charge_card()
+    end
   end
 end
 ```
@@ -107,20 +118,22 @@ end
 **Ventajas inmediatas:**
 ```elixir
 # ✅ Compile-time error si función no existe
-edge &non_existent_function/1 -> &start/1
-# ** (CompileError) undefined function non_existent_function/1
+timeline() do
+  non_existent_function() |> start()
+end
+# ** (CompileError) undefined function non_existent_function/0
 
 # ✅ Compile-time error si arity incorrecta
-edge &start/2 -> &validate_order/1
-# ** (CompileError) function start/2 is undefined or private
+def start(ctx, state), do: state  # Firma correcta: (ctx, %{step_name: result})
+def start(wrong_args), do: wrong_args  # Error en compile-time
 
 # ✅ Pattern matching normal
-def validate_order(%{items: items} = state) when is_list(items) do
-  # ...
+def validate_order(ctx, %{start: state} = all_results) when is_list(state.items) do
+  # Acceso a resultados previos por nombre
 end
 
 # ✅ Type specs estándar
-@spec validate_order(map()) :: {:ok, map()} | {:error, term()}
+@spec validate_order(Context.t(), map()) :: map() | no_return()
 ```
 
 ## Llamar Workflows desde otros Workflows
@@ -129,23 +142,34 @@ end
 defmodule ParentWorkflow do
   use Cerebelum.Workflow
 
-  def orchestrate(input) do
+  workflow() do
+    timeline() do
+      start()
+      |> orchestrate()
+      |> notify_shipping()
+      |> done()
+    end
+  end
+
+  def start(input), do: input
+
+  def orchestrate(ctx, %{start: input}) do
     # ✅ Referencia a módulo - compile-time checked!
-    {:ok, result} = execute_workflow(ProcessOrderWorkflow, input)
+    result = subworkflow(ProcessOrderWorkflow) do
+      input input
+    end
 
-    {:ok, Map.put(input, :order_result, result)}
+    Map.put(input, :order_result, result)
   end
 
-  def notify_shipping(state) do
+  def notify_shipping(ctx, %{orchestrate: state}) do
     # ✅ Otro workflow
-    execute_workflow(ShippingWorkflow, %{
-      order_id: state.order_result.order_id,
-      address: state.address
-    })
-  end
-
-  workflow do
-    edge &orchestrate/1 -> &notify_shipping/1
+    subworkflow(ShippingWorkflow) do
+      input %{
+        order_id: state.order_result.order_id,
+        address: state.address
+      }
+    end
   end
 end
 ```
@@ -153,7 +177,7 @@ end
 **El compilador verifica:**
 - `ProcessOrderWorkflow` existe
 - `ShippingWorkflow` existe
-- `execute_workflow/2` tiene la firma correcta
+- `subworkflow/2` tiene la firma correcta
 
 ## Metadata y Configuración
 
@@ -166,34 +190,43 @@ defmodule ConfigurableWorkflow do
   @workflow_version "1.0.0"
   @workflow_description "A workflow with configurable behavior"
 
-  def fetch_data(state) do
-    # ✅ Configuración granular por nodo
-    result = activity(
-      &ExternalAPI.fetch/1,
-      args: [state.query],
-      retry_policy: [
-        max_attempts: 5,
-        initial_interval: :timer.seconds(1),
-        backoff_coefficient: 2.0,
-        retryable_errors: [:network_error, :timeout]
-      ],
-      timeout: :timer.seconds(30)
-    )
+  workflow() do
+    timeline() do
+      start()
+      |> fetch_data()
+      |> process_data()
+      |> done()
+    end
 
-    {:ok, Map.put(state, :data, result)}
+    # Configuración de retry por step
+    diverge(fetch_data) do
+      :network_error ->
+        retry() do
+          attempts 5
+          delay fn attempt -> attempt * 1000 end
+          max_delay 30_000
+          backoff :exponential
+        end
+        |> fetch_data()
+
+      :timeout -> retry(3, delay: 2000) |> fetch_data()
+    end
   end
 
-  def process_data(state) do
-    # Node que puede tardar días
+  def start(input), do: input
+
+  def fetch_data(ctx, %{start: state}) do
+    # ✅ Llamada externa con manejo de errores
+    case ExternalAPI.fetch(state.query) do
+      {:ok, data} -> Map.put(state, :data, data)
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  def process_data(ctx, %{fetch_data: state}) do
+    # Step que puede tardar días
     result = long_running_process(state.data)
-    {:ok, Map.put(state, :result, result)}
-  end
-
-  workflow do
-    # Configuración por edge
-    edge &fetch_data/1 -> &process_data/1,
-      when: {:ok, _},
-      timeout: :timer.hours(24)  # Este edge puede tardar 24 horas
+    Map.put(state, :result, result)
   end
 end
 ```
@@ -204,41 +237,57 @@ end
 defmodule SmartWorkflow do
   use Cerebelum.Workflow
 
-  # Pattern matching en la firma
-  def handle_success(%{status: :completed, result: result} = state) do
+  workflow() do
+    timeline() do
+      start()
+      |> process_batch()
+      |> calculate_discount()
+      |> handle_result()
+      |> done()
+    end
+
+    branch(handle_result) do
+      status == :completed -> finalize()
+      status == :failed -> handle_error()
+    end
+  end
+
+  # Pattern matching en la firma con segundo parámetro
+  def handle_result(ctx, %{calculate_discount: %{status: :completed, result: result} = state}) do
     IO.puts("Success: #{inspect(result)}")
-    {:ok, state}
+    state
   end
 
-  def handle_error(%{status: :failed, error: error} = state) do
+  def handle_error(ctx, %{calculate_discount: %{status: :failed, error: error} = state}) do
     Logger.error("Workflow failed: #{inspect(error)}")
-    {:error, error}
+    error(error)
   end
 
-  # Guards
-  def process_large_batch(%{items: items} = state) when length(items) > 100 do
+  # Guards - múltiples clauses
+  def process_batch(ctx, %{start: %{items: items} = state}) when length(items) > 100 do
     # Procesamiento especial para lotes grandes
-    process_in_parallel(items)
-    {:ok, state}
+    result = process_in_parallel(items)
+    %{state | processed: result}
   end
 
-  def process_large_batch(%{items: items} = state) do
+  def process_batch(ctx, %{start: %{items: items} = state}) do
     # Procesamiento normal
-    process_sequential(items)
-    {:ok, state}
+    result = process_sequential(items)
+    %{state | processed: result}
   end
 
-  # Multiple clauses
-  def calculate_discount(%{user_type: :premium, total: total} = state) do
-    {:ok, %{state | discount: total * 0.20}}
+  # Multiple clauses para diferentes tipos de usuario
+  def calculate_discount(ctx, %{process_batch: %{user_type: :premium, total: total} = state}) do
+    %{state | discount: total * 0.20}
   end
 
-  def calculate_discount(%{user_type: :regular, total: total} = state) when total > 100 do
-    {:ok, %{state | discount: total * 0.10}}
+  def calculate_discount(ctx, %{process_batch: %{user_type: :regular, total: total} = state})
+      when total > 100 do
+    %{state | discount: total * 0.10}
   end
 
-  def calculate_discount(state) do
-    {:ok, %{state | discount: 0}}
+  def calculate_discount(ctx, %{process_batch: state}) do
+    %{state | discount: 0}
   end
 end
 ```
@@ -251,48 +300,68 @@ end
 defmodule PaymentWorkflow do
   use Cerebelum.Workflow
 
-  def charge_card(state) do
+  workflow() do
+    timeline() do
+      start()
+      |> charge_card()
+      |> send_receipt()
+      |> done()
+    end
+  end
+
+  def start(input), do: input
+
+  def charge_card(ctx, %{start: state}) do
     # Lógica de pago
-    {:ok, Map.put(state, :payment_status, :charged)}
+    Map.put(state, :payment_status, :charged)
   end
 
-  def send_receipt(state) do
+  def send_receipt(ctx, %{charge_card: state}) do
     # Enviar recibo
-    {:ok, state}
-  end
-
-  workflow do
-    edge &charge_card/1 -> &send_receipt/1
+    state
   end
 end
 
 defmodule OrderWorkflow do
   use Cerebelum.Workflow
 
-  def create_order(state) do
-    # Crear orden
-    {:ok, Map.put(state, :order_id, generate_id())}
-  end
+  workflow() do
+    timeline() do
+      start()
+      |> create_order()
+      |> process_payment()
+      |> fulfill_order()
+      |> done()
+    end
 
-  def process_payment(state) do
-    # ✅ Ejecutar sub-workflow
-    case execute_workflow(PaymentWorkflow, state) do
-      {:ok, result} ->
-        {:ok, Map.merge(state, result)}
-
-      {:error, reason} ->
-        {:error, reason}
+    diverge(process_payment) do
+      :payment_failed -> handle_payment_error() |> failed()
     end
   end
 
-  def fulfill_order(state) do
-    # Cumplir orden
-    {:ok, state}
+  def start(input), do: input
+
+  def create_order(ctx, %{start: state}) do
+    # Crear orden
+    Map.put(state, :order_id, generate_id())
   end
 
-  workflow do
-    edge &create_order/1 -> &process_payment/1
-    edge &process_payment/1 -> &fulfill_order/1, when: {:ok, _}
+  def process_payment(ctx, %{create_order: state}) do
+    # ✅ Ejecutar sub-workflow
+    result = subworkflow(PaymentWorkflow) do
+      input state
+    end
+
+    Map.merge(state, result)
+  end
+
+  def fulfill_order(ctx, %{process_payment: state}) do
+    # Cumplir orden
+    state
+  end
+
+  def handle_payment_error(ctx, state) do
+    %{state | status: :payment_error}
   end
 end
 ```
@@ -303,29 +372,38 @@ end
 defmodule ParallelWorkflow do
   use Cerebelum.Workflow
 
-  def fetch_data(state) do
-    {:ok, state}
+  workflow() do
+    timeline() do
+      start()
+      |> fetch_data()
+      |> parallel_processing()
+      |> aggregate_results()
+      |> done()
+    end
   end
 
-  def parallel_processing(state) do
-    # ✅ Ejecutar múltiples workflows en paralelo
-    results = parallel([
-      fn -> execute_workflow(ProcessA, state) end,
-      fn -> execute_workflow(ProcessB, state) end,
-      fn -> execute_workflow(ProcessC, state) end
-    ])
+  def start(input), do: input
 
-    {:ok, Map.put(state, :parallel_results, results)}
+  def fetch_data(ctx, %{start: state}) do
+    state
   end
 
-  def aggregate_results(state) do
-    aggregated = aggregate(state.parallel_results)
-    {:ok, Map.put(state, :final_result, aggregated)}
+  def parallel_processing(ctx, %{fetch_data: state}) do
+    # ✅ Ejecutar múltiples agentes en paralelo
+    parallel() do
+      agents [
+        {ProcessA, state},
+        {ProcessB, state},
+        {ProcessC, state}
+      ]
+      timeout 60_000
+      on_failure :continue
+    end
   end
 
-  workflow do
-    edge &fetch_data/1 -> &parallel_processing/1
-    edge &parallel_processing/1 -> &aggregate_results/1
+  def aggregate_results(ctx, %{parallel_processing: results}) do
+    aggregated = aggregate(results)
+    Map.put(%{}, :final_result, aggregated)
   end
 end
 ```
@@ -351,32 +429,36 @@ defmodule ProcessOrderWorkflowTest do
         ]
       }
 
-      assert {:ok, state} = ProcessOrderWorkflow.start(input)
+      assert state = ProcessOrderWorkflow.start(input)
       assert state.order_id == "ORD-123"
       assert state.total == 30.0
     end
   end
 
-  describe "validate_order/1" do
+  describe "validate_order/2" do
     test "succeeds when items are in stock" do
-      state = %{items: [%{id: "ITEM-1"}]}
+      ctx = %Cerebelum.Context{}
+      prev_results = %{start: %{items: [%{id: "ITEM-1"}]}}
 
       expect(InventoryService, :check_availability, fn _ ->
         {:ok, :available}
       end)
 
-      assert {:ok, ^state} = ProcessOrderWorkflow.validate_order(state)
+      assert state = ProcessOrderWorkflow.validate_order(ctx, prev_results)
+      assert state.items == [%{id: "ITEM-1"}]
     end
 
     test "fails when items are out of stock" do
-      state = %{items: [%{id: "OUT-OF-STOCK"}]}
+      ctx = %Cerebelum.Context{}
+      prev_results = %{start: %{items: [%{id: "OUT-OF-STOCK"}]}}
 
       expect(InventoryService, :check_availability, fn _ ->
         {:error, :out_of_stock, "OUT-OF-STOCK"}
       end)
 
-      assert {:error, {:out_of_stock, "OUT-OF-STOCK"}} =
-        ProcessOrderWorkflow.validate_order(state)
+      assert_raise Cerebelum.WorkflowError, fn ->
+        ProcessOrderWorkflow.validate_order(ctx, prev_results)
+      end
     end
   end
 
@@ -485,10 +567,23 @@ defmodule WellDocumentedWorkflow do
 
   # ... más funciones documentadas ...
 
-  workflow do
+  workflow() do
     @doc "Workflow graph showing the order processing flow"
-    edge &start/1 -> &validate_order/1
-    edge &validate_order/1 -> &charge_card/1, when: {:ok, _}
+
+    timeline() do
+      start()
+      |> validate_order()
+      |> charge_card()
+      |> done()
+    end
+
+    diverge(validate_order) do
+      :invalid_data -> failed()
+    end
+
+    diverge(charge_card) do
+      :payment_failed -> failed()
+    end
   end
 end
 ```
@@ -557,20 +652,37 @@ class OrderWorkflow:
 defmodule OrderWorkflow do
   use Cerebelum.Workflow
 
+  workflow() do
+    timeline() do
+      start()
+      |> create_order()
+      |> wait_one_day()
+      |> done()
+    end
+
+    diverge(create_order) do
+      :timeout -> retry(3, delay: 2000) |> create_order()
+    end
+  end
+
+  def start(input), do: input
+
   # Código funcional
-  def create_order(state) do
-    activity(&create_order_impl/1,
-      args: [state.order_id],
-      timeout: :timer.seconds(10)
-    )
+  def create_order(ctx, %{start: state}) do
+    # Llamada externa con timeout
+    case create_order_impl(state.order_id) do
+      {:ok, order} -> order
+      {:error, :timeout} -> error(:timeout)
+    end
   end
 
-  def wait_one_day(state) do
-    {:sleep, days: 1, continue_with: state}
-  end
-
-  workflow do
-    edge &create_order/1 -> &wait_one_day/1
+  def wait_one_day(ctx, %{create_order: state}) do
+    # Esperar un día (sin bloquear el BEAM)
+    receive_signal() do
+      type :continue
+      timeout :timer.hours(24)
+      on_timeout -> state  # Continuar automáticamente
+    end
   end
 end
 ```
@@ -610,59 +722,90 @@ Crea un workflow para reservar viajes que:
 defmodule TravelBookingWorkflow do
   use Cerebelum.Workflow
 
+  workflow() do
+    timeline() do
+      start()
+      |> check_availability()
+      |> book_services()
+      |> charge_payment()
+      |> send_confirmation()
+      |> done()
+    end
+
+    # Manejo de errores con compensación (Saga pattern)
+    diverge(check_availability) do
+      :not_available -> failed()
+    end
+
+    diverge(book_services) do
+      :booking_failed -> cancel_bookings() |> failed()
+    end
+
+    diverge(charge_payment) do
+      :payment_failed -> cancel_bookings() |> failed()
+      :timeout -> retry(3, delay: 2000) |> charge_payment()
+    end
+  end
+
   def start(input) do
-    {:ok, %{
+    %{
       user_id: input.user_id,
       flight_id: input.flight_id,
       hotel_id: input.hotel_id,
       total: input.total
-    }}
+    }
   end
 
-  def check_availability(state) do
-    results = parallel([
-      fn -> FlightService.check_availability(state.flight_id) end,
-      fn -> HotelService.check_availability(state.hotel_id) end
-    ])
-
-    case results do
-      [{:ok, flight}, {:ok, hotel}] ->
-        {:ok, Map.merge(state, %{flight: flight, hotel: hotel})}
+  def check_availability(ctx, %{start: state}) do
+    # Verificar en paralelo
+    parallel() do
+      agents [
+        {FlightService, %{flight_id: state.flight_id}},
+        {HotelService, %{hotel_id: state.hotel_id}}
+      ]
+      timeout 30_000
+    end
+    |> case do
+      %{FlightService: {:ok, flight}, HotelService: {:ok, hotel}} ->
+        Map.merge(state, %{flight: flight, hotel: hotel})
 
       _ ->
-        {:error, :not_available}
+        error(:not_available)
     end
   end
 
-  def book_services(state) do
+  def book_services(ctx, %{check_availability: state}) do
     with {:ok, flight_booking} <- FlightService.book(state.flight),
          {:ok, hotel_booking} <- HotelService.book(state.hotel) do
-      {:ok, Map.merge(state, %{
+      Map.merge(state, %{
         flight_booking: flight_booking,
         hotel_booking: hotel_booking
-      })}
+      })
     else
-      error -> error
+      {:error, _} -> error(:booking_failed)
     end
   end
 
-  def charge_payment(state) do
+  def charge_payment(ctx, %{book_services: state}) do
     case PaymentService.charge(state.total, state.user_id) do
       {:ok, charge_id} ->
-        {:ok, Map.put(state, :charge_id, charge_id)}
+        Map.put(state, :charge_id, charge_id)
+
+      {:error, :timeout} ->
+        error(:timeout)
 
       {:error, reason} ->
-        {:error, reason}
+        error(:payment_failed)
     end
   end
 
-  def send_confirmation(state) do
+  def send_confirmation(ctx, %{charge_payment: state}) do
     EmailService.send_booking_confirmation(state.user_id, state)
-    {:ok, state}
+    state
   end
 
-  # Compensaciones
-  def cancel_bookings(state) do
+  # Compensación (Saga pattern)
+  def cancel_bookings(ctx, state) do
     if state[:hotel_booking] do
       HotelService.cancel(state.hotel_booking.id)
     end
@@ -671,18 +814,7 @@ defmodule TravelBookingWorkflow do
       FlightService.cancel(state.flight_booking.id)
     end
 
-    {:ok, %{state | status: :cancelled}}
-  end
-
-  workflow do
-    edge &start/1 -> &check_availability/1
-    edge &check_availability/1 -> &book_services/1, when: {:ok, _}
-    edge &book_services/1 -> &charge_payment/1, when: {:ok, _}
-    edge &charge_payment/1 -> &send_confirmation/1, when: {:ok, _}
-
-    # Saga: compensar en caso de fallo
-    edge &charge_payment/1 -> &cancel_bookings/1, when: {:error, _}
-    edge &book_services/1 -> &cancel_bookings/1, when: {:error, _}
+    %{state | status: :cancelled}
   end
 end
 ```
