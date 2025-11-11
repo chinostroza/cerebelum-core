@@ -430,28 +430,131 @@ end
 
 ---
 
-### Requirement 20: Performance and Scalability
+### Requirement 20: Horizontal Scalability and Distributed Execution
 
-**User Story:** As a system architect, I want the system to handle massive concurrency so that it scales to enterprise workloads.
+**User Story:** As a system architect, I want the system to scale linearly from 1 node to 1000+ nodes using the same architecture, so that I never need to migrate or rewrite code when growing from MVP to enterprise scale.
 
-#### Acceptance Criteria
+**Competitive Context:** Must match Temporal.io's scalability (1M+ concurrent workflows) while maintaining simpler operations (1 service vs 5+ services).
 
-1. WHEN system starts THEN it SHALL support minimum 10,000 concurrent workflow executions
-2. IF load increases THEN system SHALL scale horizontally by adding nodes to cluster
-3. WHILE processing workflows THEN system SHALL maintain < 10ms p95 latency for node execution
-4. WHERE throughput is measured THEN system SHALL process minimum 1,000 workflows/second
-5. WHEN memory usage grows THEN system SHALL implement backpressure to prevent OOM
-6. IF event rate is high THEN system SHALL use batching to reduce database round-trips
-7. WHILE cluster is distributed THEN system SHALL use consistent hashing for work distribution
-8. WHERE database is bottleneck THEN system SHALL implement read replicas and caching
+#### Acceptance Criteria - Day 1 Scalability
 
-**Performance Targets:**
-- Support 100,000+ concurrent executions
-- Process 5,000+ workflows/second
-- p95 latency < 10ms for node execution
-- p99 latency < 50ms for node execution
-- Database query p95 < 5ms
-- Event storage p95 < 2ms
+1. WHEN system is deployed on 1 node THEN it SHALL use distributed architecture (Horde) that works identically on N nodes
+2. IF deploying to production THEN system SHALL NOT require code changes to scale from 1 to 1000 nodes
+3. WHILE adding nodes to cluster THEN system SHALL automatically discover new nodes via libcluster
+4. WHERE executions are distributed THEN system SHALL use Horde.DynamicSupervisor for automatic load balancing
+5. WHEN looking up execution THEN system SHALL use Horde.Registry for distributed lookup from any node
+6. IF node crashes THEN system SHALL automatically failover executions to healthy nodes within 5 seconds
+7. WHILE failover occurs THEN system SHALL recover execution state from event store with zero data loss
+8. WHERE multiple deployment strategies exist THEN system SHALL support Kubernetes, Docker Swarm, and manual clustering
+
+#### Acceptance Criteria - Performance Targets
+
+9. WHEN running on single node (8 cores, 16GB RAM) THEN system SHALL support minimum 100,000 concurrent executions
+10. IF running on 10 nodes THEN system SHALL support minimum 1,000,000 concurrent executions (linear scaling)
+11. WHILE processing workflows THEN system SHALL maintain p99 latency < 50ms for single step execution
+12. WHERE throughput is measured THEN system SHALL process minimum 100,000 workflows/second on 10 nodes
+13. WHEN comparing to Temporal.io THEN system SHALL achieve equivalent throughput with fewer resources
+14. IF memory per workflow is measured THEN system SHALL use < 1KB per concurrent execution
+15. WHILE database writes occur THEN system SHALL use partitioned tables (minimum 64 partitions) for write scalability
+16. WHERE event storage is measured THEN system SHALL achieve minimum 640,000 events/second with 64 partitions
+
+#### Acceptance Criteria - Clustering and Discovery
+
+17. WHEN deploying to Kubernetes THEN system SHALL use DNS-based discovery via libcluster
+18. IF deploying to development THEN system SHALL work on single node without clustering configuration
+19. WHILE cluster topology changes THEN system SHALL handle node joins/leaves gracefully
+20. WHERE network partition occurs THEN system SHALL continue operating on majority partition
+21. WHEN cluster forms THEN system SHALL elect no leader (leaderless architecture for HA)
+22. IF using Horde THEN system SHALL configure delta-CRDT sync interval < 100ms
+23. WHILE nodes communicate THEN system SHALL use Erlang distribution protocol (no gRPC overhead)
+24. WHERE cluster health is monitored THEN system SHALL expose metrics for node count, execution distribution, and cluster lag
+
+#### Acceptance Criteria - Load Balancing and Distribution
+
+25. WHEN starting new execution THEN Horde SHALL select node with lowest current load automatically
+26. IF node reaches capacity THEN system SHALL refuse new executions until capacity available
+27. WHILE executions run THEN system SHALL distribute evenly across all nodes (< 10% variance)
+28. WHERE execution affinity is needed THEN system SHALL support pinning executions to specific nodes
+29. WHEN node is draining THEN system SHALL prevent new executions and allow existing to complete
+30. IF node is removed THEN system SHALL redistribute executions to remaining nodes within 10 seconds
+31. WHILE rebalancing THEN system SHALL NOT interrupt running executions
+32. WHERE cluster scales up THEN new nodes SHALL start receiving executions immediately
+
+#### Acceptance Criteria - Failover and High Availability
+
+33. WHEN node crashes THEN Horde SHALL detect failure within 5 seconds via heartbeat timeout
+34. IF execution was running on crashed node THEN system SHALL restart on healthy node automatically
+35. WHILE recovering execution THEN system SHALL reconstruct state from event store
+36. WHERE execution has no events THEN system SHALL restart from beginning
+37. WHEN failover completes THEN execution SHALL continue from last committed event
+38. IF execution fails repeatedly THEN system SHALL implement exponential backoff before retries
+39. WHILE cluster has failures THEN system SHALL maintain operation with majority of nodes healthy
+40. WHERE multiple nodes fail THEN system SHALL NOT lose any committed events (event store is durable)
+
+#### Acceptance Criteria - Caching Strategy
+
+41. WHEN accessing workflow metadata THEN system SHALL use Persistent Term (fastest, immutable)
+42. IF caching execution snapshots THEN system SHALL use ETS per-node (fast, mutable)
+43. WHILE looking up execution location THEN system SHALL use Horde.Registry (distributed, consistent)
+44. WHERE cache hit rate is measured THEN workflow metadata SHALL achieve > 99% hit rate
+45. WHEN cache is invalidated THEN only affected entries SHALL be removed (no full flush)
+46. IF memory pressure occurs THEN ETS caches SHALL implement TTL-based eviction
+47. WHILE distributed cache syncs THEN system SHALL tolerate < 100ms eventual consistency
+48. WHERE cache coherency is required THEN system SHALL use Horde Registry as source of truth
+
+#### Acceptance Criteria - Database Scalability
+
+49. WHEN storing events THEN system SHALL partition by execution_id hash across minimum 64 tables
+50. IF query load is high THEN system SHALL support PostgreSQL read replicas for query distribution
+51. WHILE writing events THEN system SHALL batch inserts when possible (< 100ms window)
+52. WHERE database is partitioned THEN each partition SHALL have independent indexes
+53. WHEN event table grows THEN system SHALL support table sharding beyond single database
+54. IF using CockroachDB THEN system SHALL achieve automatic global distribution
+55. WHILE queries execute THEN system SHALL maintain p95 < 5ms for single-partition queries
+56. WHERE database bottleneck exists THEN system SHALL provide clear metrics for diagnosis
+
+**Performance Targets (Enterprise Scale):**
+
+**Single Node (8 cores, 16GB RAM):**
+- Concurrent executions: 100,000
+- Throughput: 10,000 workflows/second
+- Latency p99: < 50ms
+- Memory per execution: < 1KB
+
+**10 Nodes Cluster:**
+- Concurrent executions: 1,000,000
+- Throughput: 100,000 workflows/second
+- Latency p99: < 100ms (includes network overhead)
+- Event writes: 640,000/second (64 partitions)
+
+**100 Nodes Cluster:**
+- Concurrent executions: 10,000,000
+- Throughput: 1,000,000 workflows/second
+- Latency p99: < 150ms
+- Event writes: 6,400,000/second
+
+**Scaling Characteristics:**
+- Linear scaling up to 100 nodes
+- < 10% variance in load distribution
+- < 5 second failover time
+- Zero data loss on node failure
+- Zero downtime deployments via hot code reload
+
+**Comparison to Temporal.io:**
+- Match: Concurrent workflow capacity (1M+)
+- Match: Throughput (100K+ workflows/sec)
+- Better: Operational complexity (1 service vs 5+)
+- Better: Latency (BEAM vs gRPC overhead)
+- Better: Resource efficiency (fewer servers needed)
+- Better: Developer experience (same code 1-1000 nodes)
+
+**Edge Cases:**
+- All nodes crash simultaneously (recover from database)
+- Network partition (split-brain scenarios)
+- Node with 90% of executions crashes (redistribution load)
+- Rapid scaling up/down (rebalancing performance)
+- Database unavailable (in-memory operation degradation)
+- Event storage full (backpressure and alerting)
 
 ---
 

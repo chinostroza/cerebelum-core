@@ -1,22 +1,25 @@
 # Workflow Syntax Design - Code-First Approach
 
-**Status:** Draft - Design Iteration
-**Last Updated:** 2024-10-31
-**Context:** This document captures the iterative design decisions for Cerebelum's code-first workflow syntax.
+**Status:** Draft - Final Syntax
+**Last Updated:** 2025-11-10
+**Context:** This document defines the final syntax for Cerebelum's code-first workflow DSL.
 
 ---
 
 ## Table of Contents
 
 1. [Design Philosophy](#design-philosophy)
-2. [Core Concepts](#core-concepts)
-3. [Workflow Syntax](#workflow-syntax)
-4. [Message Passing with Pattern Matching](#message-passing-with-pattern-matching)
-5. [Timeline vs Diverge vs Branch](#timeline-vs-diverge-vs-branch)
-6. [Context and State Management](#context-and-state-management)
-7. [Complete Example](#complete-example)
-8. [How the Engine Works](#how-the-engine-works)
-9. [Design Decisions Log](#design-decisions-log)
+2. [Core Syntax](#core-syntax)
+3. [Timeline](#timeline)
+4. [Error Handling with Diverge](#error-handling-with-diverge)
+5. [Branching with Branch](#branching-with-branch)
+6. [Functions](#functions)
+7. [Parallel Execution](#parallel-execution)
+8. [Agent Communication](#agent-communication)
+9. [External Signals](#external-signals)
+10. [Subworkflows](#subworkflows)
+11. [Complete Examples](#complete-examples)
+12. [Syntax Reference](#syntax-reference)
 
 ---
 
@@ -24,1002 +27,936 @@
 
 ### Goals
 
-1. **Code-First**: Workflows are pure Elixir modules, not JSON/maps
-2. **Compile-Time Safety**: Function existence, arity, and types validated by compiler
-3. **Idiomatically Elixir**: Leverage pattern matching, guards, and function clauses
-4. **Actor Model Friendly**: Immutable context, message passing between functions
-5. **Clean Timeline**: Declarative workflow definition without noise
-6. **Zero Magic**: Explicit dependencies using atoms and pattern matching
+1. **Code-First**: Workflows are pure Elixir modules, not JSON/YAML
+2. **Concise**: Minimal boilerplate, maximum clarity
+3. **Idiomatic Elixir**: Leverages pipes, pattern matching, atoms
+4. **Explicit over Magic**: Clear what's happening at each step
+5. **Scalable**: Built on BEAM/OTP for millions of concurrent workflows
 
-### Anti-Goals
+### Principles
 
-- ❌ No JSON/map-based DSL
-- ❌ No string-based function references
-- ❌ No implicit "normalization" of names (e.g., `load_expected_transfers` → `expected_transfers`)
-- ❌ No shared mutable state
-- ❌ No custom structs required for every message
+- ✅ Timeline shows happy path clearly
+- ✅ Atoms with `:` for values, without `:` for identifiers
+- ✅ Pattern matching for data flow
+- ✅ Retry strategies inspired by Ktor
+- ✅ Zero overhead for unused features
 
 ---
 
-## Core Concepts
+## Core Syntax
 
-### 1. Workflow = Module
-
-Each workflow is an Elixir module using `use Cerebelum.Workflow`:
+### Quick Example
 
 ```elixir
-defmodule MyApp.ProcessOrder do
+defmodule PaymentWorkflow do
   use Cerebelum.Workflow
 
-  workflow do
-    timeline do
-      start()
-      |> validate_order()
-      |> charge_payment()
-      |> ship_order()
-      |> finish_success()
+  # Happy path - no start() or done()
+  timeline do
+    validate_payment()
+    |> process_payment()
+    |> send_receipt()
+  end
+
+  # Error handling with retry
+  diverge validate_payment do
+    :timeout -> retry(3, delay: 2000) |> validate_payment()
+    :invalid_card -> notify_customer() |> failed()
+  end
+
+  # Conditional branching
+  branch process_payment do
+    amount > 10_000 -> request_approval()
+    amount <= 10_000 -> charge_payment()
+  end
+
+  # Function definitions
+  fn validate_payment(ctx) do
+    case PaymentAPI.validate(ctx.card) do
+      {:ok, data} -> data
+      {:error, :timeout} -> error(:timeout)
     end
   end
-
-  # Functions define the workflow nodes
-  def start(context), do: {:ok, context}
-  def validate_order(context, %{...}), do: {:ok, ...}
-  # ...
 end
 ```
 
-### 2. Timeline = Happy Path
+---
 
-The `timeline` block defines the main execution path (the "sacred timeline"):
+## Timeline
+
+### Syntax
 
 ```elixir
 timeline do
-  start()
-  |> step_1()
-  |> step_2()
-  |> step_3()
-  |> finish()
+  step1()
+  |> step2()
+  |> step3()
+  |> step4()
 end
 ```
 
-### 3. Diverge = Error Handling
+### Rules
 
-`diverge` handles errors and exceptional cases (deviations from the timeline):
+- **No `start()` or `done()`** - implicitly starts at first step, ends at last
+- **Uses pipe operator** `|>` for visual flow
+- **Steps are function names** without `:`
+- **Read top-to-bottom** as the happy path
 
-```elixir
-diverge from: :fetch_bank_data do
-  {:ok, %{failed: [_|_]}} when context.retry_count < 3 ->
-    retry() |> back_to(:fetch_bank_data)
-
-  {:ok, %{failed: [_|_]}} ->
-    finish_partial_failure()
-
-  _ -> continue()
-end
-```
-
-### 4. Branch = Business Logic Decisions
-
-`branch` handles normal business logic branching (both paths are valid):
+### Examples
 
 ```elixir
-branch from: :analyze_amount do
-  {:ok, %{amount: amt}} when amt >= 10_000 ->
-    request_manual_approval() |> skip_to(:save)
-
-  {:ok, %{amount: _}} ->
-    auto_approve() |> skip_to(:save)
-end
-```
-
----
-
-## Workflow Syntax
-
-### Timeline Block
-
-```elixir
-workflow do
-  timeline do
-    start()
-    |> load_data()
-    |> process_data()
-    |> save_results()
-    |> finish_success()
-  end
-end
-```
-
-**Rules:**
-- Uses pipeline operator `|>`
-- No parameters visible (clean, declarative)
-- Read top-to-bottom
-- Represents the "happy path"
-
-### Diverge Block
-
-```elixir
-diverge from: :function_name do
-  pattern1 when guard1 -> action1
-  pattern2 when guard2 -> action2
-  _ -> continue()
-end
-```
-
-**Used for:**
-- Error handling
-- Retry logic
-- Timeout handling
-- Failure recovery
-
-### Branch Block
-
-```elixir
-branch from: :function_name do
-  pattern1 when guard1 -> action1
-  pattern2 when guard2 -> action2
-end
-```
-
-**Used for:**
-- Business logic decisions
-- Amount thresholds
-- Conditional flows
-- All paths are valid business cases
-
-### Flow Control Actions
-
-```elixir
-# Continue in the timeline
-continue()
-
-# Go back to a previous step (retry/loop)
-back_to(:function_name)
-
-# Skip ahead to a specific step (convergence)
-skip_to(:function_name)
-
-# Pause execution without blocking BEAM
-{:sleep, [seconds: 30], state}
-
-# Wait for human approval (HITL)
-{:wait_for_approval, [type: :manual_review], state}
-
-# Execute tasks in parallel
-{:parallel, [task1, task2, task3], state}
-```
-
----
-
-## Message Passing with Pattern Matching
-
-### The Problem: How to Pass Data Between Functions?
-
-**Rejected Approaches:**
-
-1. ❌ **Shared state accumulator** - Violates actor model
-2. ❌ **String-based names with normalization** - Too magic, error-prone
-3. ❌ **Custom structs for every message** - Too much boilerplate
-
-**Chosen Approach: Atoms + Pattern Matching**
-
-### How It Works
-
-Each function receives:
-1. **Context** (always first parameter) - Immutable execution metadata
-2. **Results map** (second parameter) - Map with atom keys referencing previous results
-
-```elixir
-def fetch_bank_movements(context, %{load_expected_transfers: expected}) do
-  #                                ↑ Atom key            ↑ Local variable
-  results = BankAPI.fetch(context.bank_accounts, context.date)
-  {:ok, %{movements: ..., failed: ...}}
-end
-```
-
-### Pattern Matching Examples
-
-**Single dependency:**
-```elixir
-def process_data(context, %{load_data: data}) do
-  {:ok, transform(data)}
-end
-```
-
-**Multiple dependencies:**
-```elixir
-def match_transactions(context, %{
-  load_expected_transfers: expected,
-  fetch_bank_movements: bank_data
-}) do
-  all_movements = Map.values(bank_data.movements) |> List.flatten()
-  {matched, discrep} = Matcher.match(expected, all_movements)
-  {:ok, %{matched: matched, discrepancies: discrep}}
-end
-```
-
-**Deep pattern matching:**
-```elixir
-def analyze(context, %{
-  match_transactions: %{discrepancies: discreps},
-  fetch_bank_movements: %{failed: failed_banks}
-}) do
-  # Extract only what you need
-  {:ok, %{analysis: DiscrepancyAnalyzer.analyze(discreps, failed_banks)}}
-end
-```
-
-**With guards:**
-```elixir
-def process(context, %{fetch_data: %{status: :complete, items: items}})
-    when length(items) > 0 do
-  {:ok, items}
-end
-
-def process(context, %{fetch_data: %{status: :empty}}) do
-  {:error, :no_data}
-end
-```
-
-### Engine Resolution Algorithm
-
-```elixir
-# The engine maintains a results cache
-cache = %{
-  load_expected_transfers: [transfer1, transfer2],
-  fetch_bank_movements: %{movements: ..., failed: []},
-  match_transactions: %{matched: ..., discrepancies: ...}
-}
-
-# When calling a function, it inspects parameter patterns
-def match_transactions(context, %{
-  fetch_bank_movements: bank_data,
-  load_expected_transfers: expected
-}) do
-  # Engine extracts required atoms: [:fetch_bank_movements, :load_expected_transfers]
-  # Engine builds map from cache
-  # Engine calls: match_transactions(context, cache)
-end
-```
-
-**Key Points:**
-- ✅ Atom keys are **exact function names** (no normalization)
-- ✅ Pattern matching is **pure Elixir** (no DSL magic)
-- ✅ Engine injects **complete cache as map**
-- ✅ Functions extract **only what they need** via pattern matching
-
----
-
-## Timeline vs Diverge vs Branch
-
-### Timeline: The Sacred Path
-
-The main execution flow when everything goes right.
-
-```elixir
+# Simple workflow
 timeline do
-  start()
-  |> load_data()
+  load_data()
   |> process_data()
   |> save_results()
-  |> finish()
 end
-```
 
-**Characteristics:**
-- Sequential execution
-- Happy path
-- No error handling
-- Clean and readable
-
-### Diverge: Error Recovery
-
-Handles errors, failures, and exceptional cases.
-
-```elixir
-diverge from: :fetch_api_data do
-  # Network timeout - retry
-  {:error, :timeout} when context.retry_count < 3 ->
-    increment_retry() |> back_to(:fetch_api_data)
-
-  # Max retries exceeded - fail
-  {:error, :timeout} ->
-    finish_with_error(:max_retries_exceeded)
-
-  # Success - continue timeline
-  {:ok, _} -> continue()
+# Complex workflow
+timeline do
+  validate_application()
+  |> verify_documents()
+  |> parallel_risk_analysis()
+  |> consensus_decision()
+  |> human_review()
+  |> generate_report()
+  |> notify_applicant()
 end
-```
-
-**When to use:**
-- API failures
-- Timeouts
-- Network errors
-- Retry logic
-- Recovery mechanisms
-
-**Semantics:** "Something went wrong, how do we recover?"
-
-### Branch: Business Logic
-
-Handles normal business decisions where all paths are valid.
-
-```elixir
-branch from: :check_amount do
-  # Large amount - needs approval
-  {:ok, %{amount: amt}} when amt >= 10_000 ->
-    request_approval() |> skip_to(:finalize)
-
-  # Small amount - auto-approve
-  {:ok, %{amount: amt}} when amt < 10_000 ->
-    auto_approve() |> skip_to(:finalize)
-end
-```
-
-**When to use:**
-- Amount thresholds
-- User role-based routing
-- Feature flags
-- A/B testing paths
-- Business rule branching
-
-**Semantics:** "Based on data, which valid path do we take?"
-
-### Comparison Table
-
-| Aspect | Timeline | Diverge | Branch |
-|--------|----------|---------|--------|
-| **Purpose** | Happy path | Error handling | Business logic |
-| **All paths valid?** | Yes (sequential) | No (recovery) | Yes (alternatives) |
-| **Metrics** | Duration, throughput | Error rate, retry count | Distribution % |
-| **Example** | Process order | Network timeout | Amount threshold |
-| **Alerting** | Slowness | High error rate | Skewed distribution |
-
----
-
-## Context and State Management
-
-### Context: Immutable Execution Metadata
-
-The `context` is immutable and flows through the entire workflow:
-
-```elixir
-defmodule Context do
-  @enforce_keys [:execution_id, :workflow_version, :started_at]
-  defstruct [
-    # Identity
-    :execution_id,        # UUID for this execution
-    :workflow_version,    # Version of workflow code
-    :correlation_id,      # For distributed tracing
-
-    # Timestamps
-    :started_at,
-    :updated_at,
-
-    # User inputs (from workflow invocation)
-    :date,
-    :user_id,
-    :bank_accounts,
-
-    # Workflow state
-    retry_count: 0,
-    iteration: 0,
-
-    # Metadata
-    tags: [],
-    metadata: %{}
-  ]
-end
-```
-
-**Rules:**
-- ✅ Context is **immutable** (functional)
-- ✅ Context is **always the first parameter** to every function
-- ✅ Context contains **workflow-level state** (retry counts, iterations)
-- ✅ Context contains **user inputs** (date, accounts, etc.)
-- ❌ Context does NOT contain **results** (those are in the cache)
-
-### Results Cache: Function Outputs
-
-The engine maintains a cache of results indexed by function name:
-
-```elixir
-# Internal engine state
-%{
-  context: %Context{execution_id: "exec-123", ...},
-
-  results: %{
-    load_expected_transfers: [transfer1, transfer2],
-    fetch_bank_movements: %{movements: ..., failed: []},
-    match_transactions: %{matched: ..., discrepancies: ...}
-  },
-
-  current_step: :analyze_discrepancies
-}
-```
-
-**Rules:**
-- ✅ Results are indexed by **function name atom**
-- ✅ Each function produces **one result** (stored in cache)
-- ✅ Functions access results via **pattern matching**
-- ✅ Cache persists across retries and loops
-
-### Message Types (Function Return Values)
-
-```elixir
-# Success - continue to next step
-{:ok, result}
-
-# Error - trigger diverge or fail
-{:error, reason}
-
-# Sleep - pause execution without blocking
-{:sleep, [seconds: 60], state}
-
-# Parallel - execute tasks concurrently
-{:parallel, [task1, task2], state}
-
-# Wait for approval - human-in-the-loop
-{:wait_for_approval, [type: :manual_review], state}
-
-# Custom tagged returns for branching
-{:needs_approval, result}
-{:auto_approved, result}
-{:retry_required, result}
 ```
 
 ---
 
-## Complete Example
+## Error Handling with Diverge
 
-### Bank Reconciliation Workflow
+### Syntax
 
 ```elixir
-defmodule Fintech.Workflows.BankReconciliation do
-  use Cerebelum.Workflow
-
-  @moduledoc """
-  Multi-bank reconciliation workflow.
-
-  Fetches movements from multiple banks (Santander, BBVA, BancoEstado),
-  matches them against expected transfers, and handles discrepancies.
-  """
-
-  # ============================================================================
-  # WORKFLOW DEFINITION
-  # ============================================================================
-
-  workflow do
-    timeline do
-      start()
-      |> load_expected_transfers()
-      |> fetch_bank_movements()
-      |> match_transactions()
-      |> analyze_discrepancies()
-      |> update_database()
-      |> generate_report()
-      |> send_notifications()
-      |> finish_success()
-    end
-
-    # Error handling: Bank API failures
-    diverge from: :fetch_bank_movements do
-      {:ok, %{failed: [_|_]}} when context.retry_count < 3 ->
-        increment_retry_count() |> back_to(:fetch_bank_movements)
-
-      {:ok, %{failed: [_|_]}} ->
-        finish_partial_failure()
-
-      _ -> continue()
-    end
-
-    # Business logic: Approval routing
-    branch from: :analyze_discrepancies do
-      {:ok, %{major: [_|_]}} ->
-        request_manual_approval()
-        |> process_approval_decision()
-        |> skip_to(:update_database)
-
-      {:ok, %{major: [], minor: [_|_]}} ->
-        auto_approve_minor()
-        |> skip_to(:update_database)
-
-      _ -> continue()
-    end
-  end
-
-  # ============================================================================
-  # FUNCTIONS (Workflow Nodes)
-  # ============================================================================
-
-  @doc "Initialize workflow context"
-  def start(context) do
-    {:ok, context}
-  end
-
-  @doc "Load expected transfers from database"
-  def load_expected_transfers(context) do
-    transfers =
-      ExpectedTransfer
-      |> where([t], fragment("DATE(?)", t.scheduled_at) == ^context.date)
-      |> where([t], t.status == :pending)
-      |> Repo.all()
-
-    {:ok, transfers}
-  end
-
-  @doc "Fetch movements from all banks in parallel"
-  def fetch_bank_movements(context, %{load_expected_transfers: _expected}) do
-    # Execute in parallel
-    results =
-      context.bank_accounts
-      |> Enum.map(&Task.async(fn -> fetch_from_bank(&1, context.date) end))
-      |> Task.await_many(timeout: 30_000)
-
-    movements = extract_successful_movements(results)
-    failed = extract_failed_banks(results)
-
-    {:ok, %{
-      movements: movements,
-      failed: failed,
-      fetched_at: DateTime.utc_now()
-    }}
-  end
-
-  @doc "Match expected transfers with actual bank movements"
-  def match_transactions(context, %{
-    load_expected_transfers: expected,
-    fetch_bank_movements: bank_data
-  }) do
-    all_movements = Map.values(bank_data.movements) |> List.flatten()
-    {matched, discrepancies} = Matcher.match(expected, all_movements)
-
-    {:ok, %{
-      matched: matched,
-      discrepancies: discrepancies
-    }}
-  end
-
-  @doc "Analyze discrepancies and categorize by severity"
-  def analyze_discrepancies(context, %{
-    match_transactions: %{discrepancies: discreps}
-  }) do
-    analysis = DiscrepancyAnalyzer.categorize(discreps)
-
-    minor = Enum.filter(analysis, &(&1.amount < 10_000))
-    major = Enum.filter(analysis, &(&1.amount >= 10_000))
-
-    {:ok, %{
-      minor: minor,
-      major: major,
-      total_amount: calculate_total_amount(analysis)
-    }}
-  end
-
-  @doc "Update database with matched transfers"
-  def update_database(context, %{
-    match_transactions: %{matched: matched},
-    analyze_discrepancies: analysis
-  }) do
-    Repo.transaction(fn ->
-      # Mark matched transfers as reconciled
-      Enum.each(matched, fn match ->
-        ExpectedTransfer
-        |> Repo.get(match.transfer_id)
-        |> ExpectedTransfer.mark_as_reconciled(match.bank_movement_id)
-        |> Repo.update!()
-      end)
-
-      # Log discrepancies
-      log_discrepancies(analysis)
-    end)
-
-    {:ok, :saved}
-  end
-
-  @doc "Generate reconciliation report"
-  def generate_report(context, %{
-    match_transactions: match_result,
-    analyze_discrepancies: analysis,
-    fetch_bank_movements: bank_data
-  }) do
-    report = %ReconciliationReport{
-      execution_id: context.execution_id,
-      date: context.date,
-      matched_count: length(match_result.matched),
-      minor_discrepancies_count: length(analysis.minor),
-      major_discrepancies_count: length(analysis.major),
-      failed_banks: bank_data.failed,
-      generated_at: DateTime.utc_now()
-    }
-
-    {:ok, Repo.insert!(report)}
-  end
-
-  @doc "Send notifications (email, Slack)"
-  def send_notifications(context, %{generate_report: report}) do
-    Mailer.send_reconciliation_report(report)
-    SlackNotifier.post_summary(report)
-    {:ok, :sent}
-  end
-
-  @doc "Finish workflow successfully"
-  def finish_success(context, %{match_transactions: result}) do
-    {:ok, %{
-      status: :completed,
-      execution_id: context.execution_id,
-      matched_count: length(result.matched)
-    }}
-  end
-
-  # ============================================================================
-  # HELPER FUNCTIONS (Private)
-  # ============================================================================
-
-  defp fetch_from_bank(account, date) do
-    case BankAPI.get_movements(account.bank_id, account.account_number, date) do
-      {:ok, movements} -> {:ok, %{bank_id: account.bank_id, movements: movements}}
-      {:error, reason} -> {:error, %{bank_id: account.bank_id, reason: reason}}
-    end
-  end
-
-  defp extract_successful_movements(results) do
-    results
-    |> Enum.filter(&match?({:ok, _}, &1))
-    |> Enum.into(%{}, fn {:ok, %{bank_id: id, movements: mvts}} -> {id, mvts} end)
-  end
-
-  defp extract_failed_banks(results) do
-    results
-    |> Enum.filter(&match?({:error, _}, &1))
-    |> Enum.map(fn {:error, %{bank_id: id}} -> id end)
-  end
-
-  defp calculate_total_amount(discrepancies) do
-    Enum.reduce(discrepancies, Money.new(0, :CLP), fn d, acc ->
-      Money.add(acc, d.amount)
-    end)
-  end
-
-  defp log_discrepancies(analysis) do
-    # Log to database or external service
-    :ok
-  end
+diverge step_name do
+  :error_type -> action()
+  :error_type -> retry(...) |> action()
+  :error_type -> step1() |> step2() |> action()
 end
 ```
 
-### Usage
+### Simple Retry
 
 ```elixir
-# Execute the workflow
-{:ok, execution} = Cerebelum.execute_workflow(
-  Fintech.Workflows.BankReconciliation,
-  %{
-    date: Date.utc_today() |> Date.add(-1),
-    user_id: "system",
-    bank_accounts: [
-      %{bank_id: "santander", account_number: "12345678"},
-      %{bank_id: "bbva", account_number: "87654321"},
-      %{bank_id: "banco_estado", account_number: "11223344"}
-    ]
-  }
+diverge validate_payment do
+  # Retry with fixed delay
+  :timeout -> retry(3, delay: 2000) |> validate_payment()
+
+  # Retry without delay
+  :transient_error -> retry(5) |> validate_payment()
+
+  # No retry - go to different step
+  :invalid_card -> notify_customer() |> failed()
+
+  # No retry - terminate
+  :fraud_detected -> failed()
+end
+```
+
+### Advanced Retry with Block
+
+```elixir
+diverge fetch_data do
+  # Linear backoff - 3s, 6s, 9s, 12s, 15s
+  :api_timeout ->
+    retry do
+      attempts 5
+      delay fn attempt -> attempt * 3000 end
+    end
+    |> fetch_data()
+
+  # Exponential backoff - 1s, 2s, 4s, 8s, 16s (max 30s)
+  :rate_limited ->
+    retry do
+      attempts 10
+      delay fn attempt -> round(:math.pow(2, attempt) * 1000) end
+      max_delay 30_000
+      backoff :exponential
+    end
+    |> fetch_data()
+
+  # With jitter to avoid thundering herd
+  :service_busy ->
+    retry do
+      attempts 5
+      delay 5000
+      jitter 0.2  # ±20% random
+    end
+    |> fetch_data()
+end
+```
+
+### Retry with Intermediate Steps
+
+```elixir
+diverge process_payment do
+  # Execute steps before retrying
+  :gateway_error ->
+    retry(3, delay: 5000)
+    |> log_retry()
+    |> notify_admin()
+    |> process_payment()
+
+  # Different path on error
+  :insufficient_funds ->
+    notify_customer()
+    |> request_additional_payment()
+    |> failed()
+end
+```
+
+### Retry Configuration Options
+
+```elixir
+retry(
+  attempts,                          # Required: number of attempts
+  delay: ms | fn,                    # Fixed delay or function
+  backoff: :exponential | :linear,   # Backoff strategy
+  max_delay: ms,                     # Maximum delay
+  jitter: true | float               # Randomization
 )
 
-# Check execution status
-Cerebelum.get_execution_status(execution.id)
-
-# Time-travel debugging
-Cerebelum.Debug.replay(execution.id)
-Cerebelum.Debug.state_at_step(execution.id, :match_transactions)
+# Examples:
+retry(3, delay: 2000)
+retry(5, delay: fn attempt -> attempt * 3000 end)
+retry(10, delay: 1000, backoff: :exponential, max_delay: 60_000)
+retry(5, delay: 5000, jitter: true)
 ```
 
 ---
 
-## How the Engine Works
+## Branching with Branch
 
-### 1. Workflow Registration
+### Syntax
 
 ```elixir
-# When module is compiled
-defmodule MyWorkflow do
+branch step_name do
+  condition1 -> destination1()
+  condition2 -> destination2()
+  condition3 -> destination3()
+end
+```
+
+### Examples
+
+```elixir
+# Simple branching
+branch check_amount do
+  amount > 10_000 -> request_approval()
+  amount <= 10_000 -> auto_approve()
+end
+
+# Complex conditions
+branch consensus_decision do
+  risk_level == :critical -> cancelled()
+  risk_level == :high and amount > 100_000 -> escalate_to_committee()
+  risk_level == :high -> human_review()
+  risk_level == :medium and credit_score > 700 -> auto_approve()
+  risk_level == :medium -> human_review()
+  risk_level == :low -> generate_report()
+end
+
+# With intermediate steps
+branch verify_identity do
+  identity_verified and age >= 18 -> continue_application()
+  identity_verified and age < 18 -> notify_guardian() |> request_approval()
+  not identity_verified -> request_documents() |> verify_identity()
+end
+```
+
+### Rules
+
+- **Fields without `:`** - `risk_level`, `amount`, `status` are fields from previous step
+- **Values with `:`** - `:high`, `:low`, `:approved` are atom values
+- **Steps without `:`** - `escalate_committee`, `human_review` are function names
+
+---
+
+## Functions
+
+### Syntax
+
+```elixir
+fn function_name(ctx) do
+  # body
+  result  # Auto-wrapped in {:ok, result}
+end
+
+fn function_name(ctx, deps) do
+  # Access previous results via pattern matching
+  result
+end
+```
+
+### Examples
+
+```elixir
+# Simple function
+fn validate_payment(ctx) do
+  PaymentAPI.validate(ctx.card_number)
+end
+
+# With dependencies
+fn process_payment(ctx, %{validate_payment: validated}) do
+  PaymentGateway.charge(validated.amount)
+end
+
+# Multiple dependencies
+fn match_transactions(ctx, %{
+  load_expected: expected,
+  fetch_movements: movements
+}) do
+  Matcher.match(expected, movements)
+end
+
+# With error handling
+fn fetch_credit_score(ctx) do
+  case CreditBureau.fetch(ctx.ssn) do
+    {:ok, score} -> score
+    {:error, :timeout} -> error(:bureau_timeout)
+    {:error, :not_found} -> error(:no_credit_history)
+  end
+end
+
+# Deep pattern matching
+fn analyze(ctx, %{
+  match_transactions: %{discrepancies: discreps},
+  fetch_movements: %{failed: failed_banks}
+}) do
+  DiscrepancyAnalyzer.analyze(discreps, failed_banks)
+end
+```
+
+### Helper Functions
+
+```elixir
+# Return error (triggers diverge)
+error(:error_type)
+
+# Return timeout
+timeout(%{reason: "took too long"})
+
+# Terminate workflow
+done()      # Success
+failed()    # Failure
+cancelled() # Cancelled
+```
+
+---
+
+## Parallel Execution
+
+### Syntax
+
+```elixir
+fn step_name(ctx, deps) do
+  parallel [
+    {Agent1, %{data: ...}},
+    {Agent2, %{data: ...}},
+    {Agent3, %{data: ...}}
+  ],
+  timeout: ms,
+  on_failure: :stop | :continue,
+  min_successes: n
+end
+```
+
+### Examples
+
+```elixir
+# Simple parallel execution
+fn parallel_risk_analysis(ctx, %{validate_application: data}) do
+  parallel [
+    {CreditScoreAgent, %{applicant_id: data.applicant.id}},
+    {FinancialAnalysisAgent, %{documents: data.documents}},
+    {FraudDetectionAgent, %{applicant: data.applicant}}
+  ], timeout: 120_000
+end
+
+# With error handling
+fn robust_analysis(ctx, deps) do
+  parallel [
+    {Agent1, %{data: deps.input}},
+    {Agent2, %{data: deps.input}},
+    {Agent3, %{data: deps.input}}
+  ],
+  timeout: 60_000,
+  on_failure: :continue,   # Don't fail if one fails
+  min_successes: 2         # Need at least 2 to succeed
+end
+
+# Access results
+fn consolidate_results(ctx, %{parallel_risk_analysis: results}) do
+  # results is a list of agent outputs
+  scores = Enum.map(results, & &1.risk_score)
+  avg_score = Enum.sum(scores) / length(scores)
+
+  %{
+    average_score: avg_score,
+    individual_scores: scores
+  }
+end
+```
+
+---
+
+## Agent Communication
+
+### Overview
+
+Parallel agents can communicate using **broadcast**, **await**, **send_to**, and **receive_from**.
+
+### Broadcast & Await
+
+```elixir
+defmodule ProducerAgent do
   use Cerebelum.Workflow
 
-  workflow do
-    timeline do
-      start() |> process() |> finish()
+  timeline do
+    process_data()
+    |> broadcast_results()
+  end
+
+  fn broadcast_results(ctx, %{process_data: result}) do
+    # Broadcast to all peers in parallel group
+    broadcast(:data_ready, %{
+      from: ProducerAgent,
+      result: result,
+      timestamp: DateTime.utc_now()
+    })
+
+    result
+  end
+end
+
+defmodule ConsumerAgent do
+  use Cerebelum.Workflow
+
+  timeline do
+    wait_for_data()
+    |> process_received()
+  end
+
+  fn wait_for_data(ctx) do
+    # Wait for broadcast from ProducerAgent
+    await ProducerAgent, :data_ready, timeout: 30_000
+  end
+
+  fn process_received(ctx, %{wait_for_data: received}) do
+    # received contains the broadcast payload
+    %{
+      original: received.result,
+      processed_at: DateTime.utc_now()
+    }
+  end
+end
+```
+
+### Send To & Receive From
+
+```elixir
+defmodule CoordinatorAgent do
+  use Cerebelum.Workflow
+
+  timeline do
+    prepare_task()
+    |> send_task()
+    |> wait_response()
+  end
+
+  fn send_task(ctx, %{prepare_task: task}) do
+    # Send to specific agent
+    send_to(WorkerAgent, :task_assigned, task)
+    task
+  end
+
+  fn wait_response(ctx) do
+    # Receive from specific agent
+    receive_from(WorkerAgent, :task_complete, timeout: 60_000)
+  end
+end
+
+defmodule WorkerAgent do
+  use Cerebelum.Workflow
+
+  timeline do
+    wait_task()
+    |> execute_task()
+    |> send_result()
+  end
+
+  fn wait_task(ctx) do
+    receive_from(CoordinatorAgent, :task_assigned, timeout: 30_000)
+  end
+
+  fn send_result(ctx, %{execute_task: result}) do
+    send_to(CoordinatorAgent, :task_complete, result)
+    result
+  end
+end
+```
+
+### Communication Helpers
+
+```elixir
+# Broadcast to all peers
+broadcast(:message_type, data)
+
+# Await broadcast from agent
+await AgentModule, :message_type, timeout: ms
+
+# Send to specific agent
+send_to(AgentModule, :message_type, data)
+
+# Receive from specific agent
+receive_from(AgentModule, :message_type, timeout: ms)
+```
+
+---
+
+## External Signals
+
+### Overview
+
+Workflows can wait for external events (approvals, webhooks, etc.) using `receive_signal`.
+
+### Syntax
+
+```elixir
+fn step_name(ctx, deps) do
+  receive_signal do
+    {:signal_type, data} -> result
+    {:other_signal, data} -> other_result
+  after timeout ->
+    {:timeout, %{}}
+  end
+end
+```
+
+### Example: Human Approval
+
+```elixir
+fn wait_for_approval(ctx, %{submit_request: request}) do
+  # Notify approver
+  ApprovalSystem.notify(ctx.approver_email, request)
+
+  # Wait for external signal
+  receive_signal do
+    {:approval_decision, %{approved: true, approver: approver}} ->
+      %{approved: true, approver: approver, approved_at: DateTime.utc_now()}
+
+    {:approval_decision, %{approved: false, reason: reason}} ->
+      error(:approval_rejected)
+
+    {:cancel_request, _data} ->
+      error(:request_cancelled)
+
+  after 3_600_000 ->  # 1 hour
+    error(:approval_timeout)
+  end
+end
+
+# Diverge handles errors
+diverge wait_for_approval do
+  :approval_rejected -> notify_applicant() |> failed()
+  :approval_timeout -> escalate_to_manager()
+  :request_cancelled -> cancelled()
+end
+```
+
+### Sending Signals from External Systems
+
+```elixir
+# From Elixir code
+Cerebelum.send_signal(
+  "exec-uuid-123",           # execution_id
+  :approval_decision,        # signal name
+  %{approved: true, approver: "john@example.com"}
+)
+
+# From HTTP API
+POST /workflows/exec-123/signal
+{
+  "signal": "approval_decision",
+  "data": {
+    "approved": true,
+    "approver": "john@example.com"
+  }
+}
+```
+
+---
+
+## Subworkflows
+
+### Syntax
+
+```elixir
+fn step_name(ctx, deps) do
+  subworkflow(SubWorkflowModule, %{data: ...})
+end
+```
+
+### Example
+
+```elixir
+# Main workflow
+fn verify_documents(ctx, %{validate_application: data}) do
+  subworkflow(DocumentVerification, %{
+    documents: data.documents,
+    required_types: [:id, :proof_of_income]
+  })
+end
+
+# Subworkflow
+defmodule DocumentVerification do
+  use Cerebelum.Workflow
+
+  timeline do
+    extract_data()
+    |> validate_format()
+    |> verify_authenticity()
+  end
+
+  fn extract_data(ctx) do
+    Enum.map(ctx.documents, &OCR.extract/1)
+  end
+
+  fn validate_format(ctx, %{extract_data: extracted}) do
+    Enum.all?(extracted, &valid_format?/1)
+  end
+
+  fn verify_authenticity(ctx, %{validate_format: validated}) do
+    Enum.all?(validated, &authentic?/1)
+  end
+end
+```
+
+---
+
+## Complete Examples
+
+### Example 1: Payment Processing
+
+```elixir
+defmodule PaymentWorkflow do
+  use Cerebelum.Workflow
+
+  timeline do
+    validate_payment()
+    |> check_fraud()
+    |> process_payment()
+    |> send_receipt()
+  end
+
+  diverge validate_payment do
+    :timeout -> retry(3, delay: 2000) |> validate_payment()
+    :invalid_card -> notify_customer() |> failed()
+  end
+
+  diverge process_payment do
+    :insufficient_funds -> notify_customer() |> request_payment() |> failed()
+    :gateway_error ->
+      retry do
+        attempts 5
+        delay fn attempt -> attempt * 2000 end
+        max_delay 30_000
+      end
+      |> process_payment()
+  end
+
+  branch check_fraud do
+    fraud_score > 0.8 -> cancel_payment() |> failed()
+    fraud_score > 0.5 -> request_verification()
+    fraud_score <= 0.5 -> process_payment()
+  end
+
+  fn validate_payment(ctx) do
+    case PaymentAPI.validate(ctx.card) do
+      {:ok, validated} -> validated
+      {:error, :timeout} -> error(:timeout)
+      {:error, :invalid} -> error(:invalid_card)
+    end
+  end
+
+  fn check_fraud(ctx, %{validate_payment: payment}) do
+    score = FraudDetector.score(payment)
+    %{fraud_score: score, validated_payment: payment}
+  end
+
+  fn process_payment(ctx, %{check_fraud: check}) do
+    case PaymentGateway.charge(check.validated_payment) do
+      {:ok, transaction} -> transaction
+      {:error, :insufficient_funds} -> error(:insufficient_funds)
+      {:error, :gateway_error} -> error(:gateway_error)
+    end
+  end
+
+  fn send_receipt(ctx, %{process_payment: transaction}) do
+    Email.send_receipt(ctx.customer_email, transaction)
+    %{receipt_sent: true}
+  end
+end
+```
+
+### Example 2: Loan Application with Multi-Agent
+
+```elixir
+defmodule LoanApplication do
+  use Cerebelum.Workflow
+
+  timeline do
+    validate_application()
+    |> verify_documents()
+    |> parallel_risk_analysis()
+    |> consensus_decision()
+    |> human_review()
+    |> generate_report()
+  end
+
+  diverge validate_application do
+    :api_timeout ->
+      retry do
+        attempts 5
+        delay fn attempt -> attempt * 3000 end
+        max_delay 30_000
+      end
+      |> log_retry()
+      |> validate_application()
+
+    :invalid_data -> notify_applicant() |> failed()
+  end
+
+  branch consensus_decision do
+    risk_level == :critical -> cancelled()
+    risk_level == :high and amount > 100_000 -> escalate_to_committee()
+    risk_level == :high -> human_review()
+    risk_level == :low -> generate_report()
+  end
+
+  fn validate_application(ctx) do
+    case ApplicationAPI.validate(ctx.application_id) do
+      {:ok, data} -> data
+      {:error, :timeout} -> error(:api_timeout)
+      {:error, :invalid} -> error(:invalid_data)
+    end
+  end
+
+  fn verify_documents(ctx, %{validate_application: data}) do
+    subworkflow(DocumentVerification, %{
+      documents: data.documents,
+      required_types: [:id, :proof_of_income]
+    })
+  end
+
+  fn parallel_risk_analysis(ctx, deps) do
+    parallel [
+      {CreditScoreAgent, %{applicant_id: deps.validate_application.applicant.id}},
+      {FinancialAnalysisAgent, %{documents: deps.verify_documents}},
+      {FraudDetectionAgent, %{applicant: deps.validate_application.applicant}}
+    ],
+    timeout: 120_000,
+    on_failure: :continue,
+    min_successes: 2
+  end
+
+  fn consensus_decision(ctx, %{parallel_risk_analysis: results}) do
+    scores = Enum.map(results, & &1.risk_score)
+    avg_score = Enum.sum(scores) / length(scores)
+
+    %{
+      risk_level: calculate_risk_level(avg_score),
+      amount: ctx.loan_amount,
+      scores: results
+    }
+  end
+
+  fn human_review(ctx, %{consensus_decision: decision}) do
+    ReviewSystem.notify_reviewer(ctx.execution_id, decision)
+
+    receive_signal do
+      {:review_complete, %{approved: true, reviewer: reviewer}} ->
+        %{approved: true, reviewer: reviewer, reviewed_at: DateTime.utc_now()}
+
+      {:review_complete, %{approved: false, reason: reason}} ->
+        error(:review_rejected)
+
+    after 7_200_000 ->  # 2 hours
+      error(:review_timeout)
     end
   end
 end
 
-# The macro extracts:
-# - Timeline graph structure
-# - Diverge/branch definitions
-# - Function list
-# - Module bytecode (for versioning)
-```
+# Agent with communication
+defmodule CreditScoreAgent do
+  use Cerebelum.Workflow
 
-### 2. Execution Flow
-
-```elixir
-# Initial state
-state = %{
-  context: %Context{
-    execution_id: "exec-123",
-    date: ~D[2024-01-15],
-    retry_count: 0
-  },
-  results: %{},
-  current_step: :start
-}
-
-# Execute timeline
-for step <- [:start, :load_expected_transfers, :fetch_bank_movements, ...] do
-  # 1. Inspect function parameters
-  params = introspect_function_params(MyWorkflow, step)
-  # => [:context, %{load_expected_transfers: _}]
-
-  # 2. Build arguments from cache
-  args = [state.context, state.results]
-
-  # 3. Execute function
-  result = apply(MyWorkflow, step, args)
-
-  # 4. Handle return value
-  case result do
-    {:ok, value} ->
-      # Save result in cache
-      state = put_in(state.results[step], value)
-
-      # Check for diverge/branch
-      handle_diverge_or_branch(step, result, state)
-
-    {:error, reason} ->
-      handle_error(reason, state)
-
-    {:sleep, opts, value} ->
-      handle_sleep(opts, value, state)
-  end
-end
-```
-
-### 3. Parameter Introspection
-
-```elixir
-defmodule Cerebelum.Engine.Introspection do
-  def introspect_function_params(module, function_name) do
-    # Get module BEAM bytecode
-    {:ok, {_, [{:abstract_code, {_, ac}}]}} =
-      :beam_lib.chunks(module, [:abstract_code])
-
-    # Find function definition
-    {:function, _, ^function_name, arity, clauses} =
-      find_function(ac, function_name)
-
-    # Extract first clause parameters
-    {:clause, _, params, _, _} = hd(clauses)
-
-    # Parse parameter patterns
-    Enum.map(params, &parse_param_pattern/1)
+  timeline do
+    fetch_credit_data()
+    |> calculate_score()
+    |> broadcast_results()
+    |> listen_for_fraud()
+    |> finalize()
   end
 
-  defp parse_param_pattern({:var, _, :context}) do
-    :context
+  diverge fetch_credit_data do
+    :bureau_timeout -> retry(3, delay: 3000) |> fetch_credit_data()
+    :bureau_unavailable -> failed()
   end
 
-  defp parse_param_pattern({:map, _, fields}) do
-    # Extract atom keys from map pattern
-    # %{load_expected_transfers: x, fetch_bank: y}
-    # => [:load_expected_transfers, :fetch_bank]
-    extract_atom_keys(fields)
+  fn fetch_credit_data(ctx) do
+    case CreditBureau.fetch(ctx.applicant_id) do
+      {:ok, data} -> data
+      {:error, :timeout} -> error(:bureau_timeout)
+      {:error, :unavailable} -> error(:bureau_unavailable)
+    end
   end
-end
-```
 
-### 4. Result Resolution
-
-```elixir
-defmodule Cerebelum.Engine.Resolver do
-  def build_function_args(params, context, results_cache) do
-    Enum.map(params, fn
-      :context ->
-        context
-
-      required_atoms when is_list(required_atoms) ->
-        # Build map with required results
-        Map.take(results_cache, required_atoms)
-    end)
+  fn calculate_score(ctx, %{fetch_credit_data: data}) do
+    score = RiskModel.calculate(data)
+    %{risk_score: score, credit_data: data}
   end
-end
 
-# Example:
-# Function: match_transactions(context, %{
-#   load_expected_transfers: expected,
-#   fetch_bank_movements: bank_data
-# })
-#
-# params = [:context, [:load_expected_transfers, :fetch_bank_movements]]
-#
-# build_function_args(params, context, cache)
-# => [
-#   %Context{...},
-#   %{
-#     load_expected_transfers: [transfer1, transfer2],
-#     fetch_bank_movements: %{movements: ...}
-#   }
-# ]
-```
+  fn broadcast_results(ctx, %{calculate_score: result}) do
+    broadcast(:credit_analysis_complete, %{
+      agent: CreditScoreAgent,
+      risk_score: result.risk_score
+    })
+    result
+  end
 
-### 5. Diverge/Branch Evaluation
+  fn listen_for_fraud(ctx, %{calculate_score: analysis}) do
+    case await FraudDetectionAgent, :fraud_alert, timeout: 10_000 do
+      {:ok, %{fraud_detected: true, severity: severity}} ->
+        # Adjust score if fraud detected
+        adjusted = min(1.0, analysis.risk_score + severity * 0.3)
+        %{analysis | risk_score: adjusted, fraud_flagged: true}
 
-```elixir
-defmodule Cerebelum.Engine.Flow do
-  def handle_diverge(step, result, state) do
-    # Get diverge definition for this step
-    diverge_clauses = get_diverge_clauses(state.workflow, step)
+      _ ->
+        Map.put(analysis, :fraud_flagged, false)
+    end
+  end
 
-    # Evaluate each clause with pattern matching
-    Enum.find_value(diverge_clauses, fn {pattern, guard, action} ->
-      if pattern_matches?(result, pattern) and guard_passes?(guard, state.context) do
-        execute_action(action, state)
-      end
-    end) || continue_timeline(state)
+  fn finalize(ctx, %{listen_for_fraud: final}) do
+    final
   end
 end
 ```
 
 ---
 
-## Design Decisions Log
+## Syntax Reference
 
-### Decision 1: Timeline + Diverge + Branch (vs single "edge" keyword)
+### Timeline
 
-**Date:** 2024-10-31
-
-**Problem:** Original design had individual `edge` declarations which were hard to read and didn't show the main flow clearly.
-
-**Considered:**
-- A) Individual `edge` declarations
-- B) `flow` + `branch`
-- C) `timeline` + `diverge` + `branch`
-
-**Chosen:** C - `timeline` + `diverge` + `branch`
-
-**Rationale:**
-- `timeline` clearly shows the happy path
-- `diverge` vs `branch` separates errors from business logic
-- Inspired by multiverse/timeline terminology (natural metaphor)
-- Better observability (can track divergence rate vs branch distribution)
-
-### Decision 2: Pattern Matching with Atom Keys (vs custom structs)
-
-**Date:** 2024-10-31
-
-**Problem:** How to pass data between functions without creating boilerplate structs or using magic name normalization.
-
-**Considered:**
-- A) Custom struct for each message
-- B) String-based names with normalization
-- C) Variable names matching function names
-- D) Atoms as keyword list keys
-- E) Atoms as map keys with pattern matching
-
-**Chosen:** E - Atoms as map keys with pattern matching
-
-**Rationale:**
-- Idiomatically Elixir (pattern matching is core)
-- No boilerplate (no struct definitions needed)
-- No magic (exact atom matching)
-- Works with guards and deep pattern matching
-- Familiar (like working with Plug.Conn, Ecto.Changeset)
-
-**Example:**
 ```elixir
-def match_transactions(context, %{
-  load_expected_transfers: expected,
-  fetch_bank_movements: bank_data
-}) do
-  # Pattern match extracts only what's needed
+timeline do
+  step1()
+  |> step2()
+  |> step3()
 end
 ```
 
-### Decision 3: Exact Atom Matching (vs name normalization)
+### Diverge
 
-**Date:** 2024-10-31
+```elixir
+# Simple
+diverge step_name do
+  :error_type -> retry(N, delay: MS) |> step()
+  :error_type -> step1() |> step2() |> failed()
+end
 
-**Problem:** Should we normalize function names to match parameter names?
+# Complex
+diverge step_name do
+  :error_type ->
+    retry do
+      attempts N
+      delay fn attempt -> MS end
+      max_delay MS
+      backoff :exponential
+      jitter 0.2
+    end
+    |> step()
+end
+```
 
-**Considered:**
-- A) Normalize: `load_expected_transfers` → `expected_transfers`
-- B) Exact match: parameter must be `:load_expected_transfers`
+### Branch
 
-**Chosen:** B - Exact atom matching
+```elixir
+branch step_name do
+  condition1 -> destination1()
+  condition2 -> destination2()
+end
+```
 
-**Rationale:**
-- No magic/surprises
-- Clear errors (atom not found)
-- Refactoring-friendly (rename function = update all references)
-- Compile-time safety
+### Functions
 
-### Decision 4: Context as First Parameter (vs implicit)
+```elixir
+fn function_name(ctx) do
+  result  # Auto-wrapped in {:ok, result}
+end
 
-**Date:** 2024-10-31
+fn function_name(ctx, deps) do
+  result
+end
+```
 
-**Problem:** How should functions access the execution context?
+### Parallel
 
-**Considered:**
-- A) Implicit global context
-- B) Context as first parameter (explicit)
-- C) Context in results map
+```elixir
+parallel [
+  {Agent1, %{...}},
+  {Agent2, %{...}}
+],
+timeout: MS,
+on_failure: :stop | :continue,
+min_successes: N
+```
 
-**Chosen:** B - Context as first parameter
+### Communication
 
-**Rationale:**
-- Explicit (you see it in the signature)
-- Testable (easy to inject)
-- Familiar (like `conn` in Plug, `socket` in Phoenix)
-- Immutable (passed by value)
+```elixir
+broadcast(:message_type, data)
+await AgentModule, :message_type, timeout: MS
+send_to(AgentModule, :message_type, data)
+receive_from(AgentModule, :message_type, timeout: MS)
+```
 
-### Decision 5: Results as Second Parameter Map (vs positional args)
+### Signals
 
-**Date:** 2024-10-31
+```elixir
+receive_signal do
+  {:signal_type, data} -> result
+after timeout -> {:timeout, %{}}
+end
+```
 
-**Problem:** How to handle multiple dependencies?
+### Subworkflows
 
-**Considered:**
-- A) Positional: `fn(context, prev, prev-1, prev-2)`
-- B) Keyword list: `fn(context, load_data: x, process: y)`
-- C) Map: `fn(context, %{load_data: x, process: y})`
+```elixir
+subworkflow(ModuleName, %{data: ...})
+```
 
-**Chosen:** C - Map with pattern matching
+### Helpers
 
-**Rationale:**
-- Order-independent (can request any previous result)
-- Pattern matching works naturally
-- Can destructure deeply
-- Works with guards
+```elixir
+error(:type)      # Trigger diverge
+timeout(data)     # Timeout error
+done()            # Success
+failed()          # Failure
+cancelled()       # Cancelled
+```
 
----
+### Naming Rules
 
-## Next Steps
-
-1. **Implement `use Cerebelum.Workflow` macro**
-   - Extract timeline, diverge, branch definitions
-   - Validate graph structure at compile-time
-   - Generate workflow metadata
-
-2. **Implement execution engine**
-   - Context management
-   - Results cache
-   - Parameter introspection
-   - Function execution
-   - Flow control (diverge/branch)
-
-3. **Implement time-travel debugging**
-   - Event sourcing for all executions
-   - State reconstruction
-   - Step-by-step replay
-
-4. **Create example workflows**
-   - Bank reconciliation (this document)
-   - E-commerce order processing
-   - Multi-step approval workflow
-   - Data pipeline with retries
-
-5. **Write comprehensive tests**
-   - Macro expansion tests
-   - Engine execution tests
-   - Pattern matching resolution tests
-   - Error handling tests
-
----
-
-## References
-
-- [Elixir Pattern Matching](https://elixir-lang.org/getting-started/pattern-matching.html)
-- [OTP GenServer](https://hexdocs.pm/elixir/GenServer.html)
-- [Temporal Workflows](https://docs.temporal.io/workflows)
-- [LangGraph](https://langchain-ai.github.io/langgraph/)
-- [Elixir Macros](https://elixir-lang.org/getting-started/meta/macros.html)
+- **Steps (no `:`)** - `validate_payment`, `CreditScoreAgent`
+- **Error types (with `:`)** - `:timeout`, `:invalid_card`
+- **Values (with `:`)** - `:high`, `:low`, `:approved`
+- **Fields (no `:`)** - `risk_level`, `amount`, `status`
+- **Keywords (with `:`)** - `retry:`, `delay:`, `timeout:`
 
 ---
 
