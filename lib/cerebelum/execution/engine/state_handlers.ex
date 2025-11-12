@@ -11,6 +11,7 @@ defmodule Cerebelum.Execution.Engine.StateHandlers do
   alias Cerebelum.Execution.Engine.Data
   alias Cerebelum.Execution.StepExecutor
   alias Cerebelum.Execution.ErrorInfo
+  alias Cerebelum.Execution.{DivergeHandler, BranchHandler, JumpHandler}
 
   @doc """
   Handler for :initializing state.
@@ -121,11 +122,61 @@ defmodule Cerebelum.Execution.Engine.StateHandlers do
   ## Private Helpers
 
   defp handle_step_success(data, step_name, step_result) do
-    # Store result and advance
-    data =
-      data
-      |> Data.store_result(step_name, step_result)
-      |> Data.advance_step()
+    # Store result
+    data = Data.store_result(data, step_name, step_result)
+
+    # Evaluate diverge (error handling)
+    diverge_result = DivergeHandler.evaluate(data.workflow_metadata, step_name, step_result)
+
+    case diverge_result do
+      {:failed, reason} ->
+        # Diverge says to fail
+        error_info = ErrorInfo.from_diverge_failed(step_name, reason, data.context.execution_id)
+        data = Data.mark_failed(data, error_info)
+        {:next_state, :failed, data}
+
+      {:back_to, target_step} ->
+        # Diverge says to retry/loop back
+        handle_jump(data, :back_to, target_step)
+
+      {:skip_to, target_step} ->
+        # Diverge says to skip (rare but supported)
+        handle_jump(data, :skip_to, target_step)
+
+      {:continue, _} ->
+        # Diverge says continue, check branch
+        handle_after_diverge(data, step_name, step_result)
+
+      :no_diverge ->
+        # No diverge defined, check branch
+        handle_after_diverge(data, step_name, step_result)
+    end
+  end
+
+  # Handle logic after diverge evaluation (branch or normal flow)
+  defp handle_after_diverge(data, step_name, step_result) do
+    # Evaluate branch (business logic routing)
+    branch_result = BranchHandler.evaluate(data.workflow_metadata, step_name, step_result)
+
+    case branch_result do
+      {:skip_to, target_step} ->
+        # Branch says to take a different path
+        handle_jump(data, :skip_to, target_step)
+
+      {:continue, _} ->
+        # Branch says continue normally
+        handle_normal_flow(data)
+
+      :no_branch ->
+        # No branch defined, continue normally
+        handle_normal_flow(data)
+    end
+  end
+
+  # Handle normal flow (advance to next step)
+  defp handle_normal_flow(data) do
+    # Advance to next step
+    data = Data.advance_step(data)
 
     # Check if finished
     if Data.finished?(data) do
@@ -137,6 +188,35 @@ defmodule Cerebelum.Execution.Engine.StateHandlers do
       data = Data.update_context_step(data, next_step)
 
       {:next_state, :executing_step, data, [{:next_event, :internal, :execute}]}
+    end
+  end
+
+  # Handle jumps (back_to, skip_to)
+  defp handle_jump(data, jump_type, target_step) do
+    case JumpHandler.jump_to_step(data, jump_type, target_step) do
+      {:ok, new_data} ->
+        # Update context to new step
+        next_step = Data.current_step_name(new_data)
+        new_data = Data.update_context_step(new_data, next_step)
+
+        # Continue execution at new step
+        {:next_state, :executing_step, new_data, [{:next_event, :internal, :execute}]}
+
+      {:error, :step_not_found} ->
+        # Target step doesn't exist
+        error_info =
+          ErrorInfo.from_invalid_jump(target_step, data.context.execution_id, "step_not_found")
+
+        data = Data.mark_failed(data, error_info)
+        {:next_state, :failed, data}
+
+      {:error, :infinite_loop} ->
+        # Too many iterations
+        error_info =
+          ErrorInfo.from_infinite_loop(data.current_step_index, data.context.execution_id)
+
+        data = Data.mark_failed(data, error_info)
+        {:next_state, :failed, data}
     end
   end
 

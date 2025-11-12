@@ -5,7 +5,8 @@ defmodule Cerebelum.Execution.ErrorInfo do
   Provides consistent error representation and formatting across the execution engine.
   """
 
-  @type error_kind :: :exception | :exit | :throw | :timeout
+  @type error_kind ::
+          :exception | :exit | :throw | :timeout | :diverge_failed | :invalid_jump | :infinite_loop
   @type t :: %__MODULE__{
           kind: error_kind(),
           step_name: atom(),
@@ -112,6 +113,69 @@ defmodule Cerebelum.Execution.ErrorInfo do
   end
 
   @doc """
+  Creates a new ErrorInfo struct from a diverge failure.
+
+  ## Examples
+
+      iex> error = ErrorInfo.from_diverge_failed(:fetch_data, {:error, :network}, "exec-123")
+      iex> error.kind
+      :diverge_failed
+  """
+  @spec from_diverge_failed(atom(), term(), String.t()) :: t()
+  def from_diverge_failed(step_name, reason, execution_id) do
+    %__MODULE__{
+      kind: :diverge_failed,
+      step_name: step_name,
+      reason: reason,
+      stacktrace: nil,
+      execution_id: execution_id,
+      timestamp: DateTime.utc_now()
+    }
+  end
+
+  @doc """
+  Creates a new ErrorInfo struct from an invalid jump.
+
+  ## Examples
+
+      iex> error = ErrorInfo.from_invalid_jump(:nonexistent_step, "exec-123", "step_not_found")
+      iex> error.kind
+      :invalid_jump
+  """
+  @spec from_invalid_jump(atom(), String.t(), String.t()) :: t()
+  def from_invalid_jump(target_step, execution_id, reason) do
+    %__MODULE__{
+      kind: :invalid_jump,
+      step_name: target_step,
+      reason: reason,
+      stacktrace: nil,
+      execution_id: execution_id,
+      timestamp: DateTime.utc_now()
+    }
+  end
+
+  @doc """
+  Creates a new ErrorInfo struct from an infinite loop detection.
+
+  ## Examples
+
+      iex> error = ErrorInfo.from_infinite_loop(5, "exec-123")
+      iex> error.kind
+      :infinite_loop
+  """
+  @spec from_infinite_loop(non_neg_integer(), String.t()) :: t()
+  def from_infinite_loop(step_index, execution_id) do
+    %__MODULE__{
+      kind: :infinite_loop,
+      step_name: :unknown,
+      reason: "Exceeded maximum iterations (1000) at step index #{step_index}",
+      stacktrace: nil,
+      execution_id: execution_id,
+      timestamp: DateTime.utc_now()
+    }
+  end
+
+  @doc """
   Formats the error as a human-readable string.
 
   ## Examples
@@ -136,6 +200,15 @@ defmodule Cerebelum.Execution.ErrorInfo do
 
       :timeout ->
         "Timeout in step :#{error.step_name} - step exceeded maximum execution time"
+
+      :diverge_failed ->
+        "Diverge failed in step :#{error.step_name} - reason: #{inspect(error.reason)}"
+
+      :invalid_jump ->
+        "Invalid jump to step :#{error.step_name} - #{error.reason}"
+
+      :infinite_loop ->
+        "Infinite loop detected - #{error.reason}"
     end
   end
 

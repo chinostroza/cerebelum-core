@@ -13,16 +13,20 @@ defmodule Cerebelum.Execution.Engine.Data do
   @type t :: %__MODULE__{
           context: Context.t(),
           workflow_metadata: map(),
+          timeline: [atom()],
           results: ResultsCache.t(),
           current_step_index: non_neg_integer(),
+          iteration: non_neg_integer(),
           error: term() | nil
         }
 
   defstruct [
     :context,
     :workflow_metadata,
+    :timeline,
     results: %{},
     current_step_index: 0,
+    iteration: 0,
     error: nil
   ]
 
@@ -47,8 +51,10 @@ defmodule Cerebelum.Execution.Engine.Data do
     %__MODULE__{
       context: context,
       workflow_metadata: workflow_metadata,
+      timeline: workflow_metadata.timeline,
       results: %{},
-      current_step_index: 0
+      current_step_index: 0,
+      iteration: 0
     }
   end
 
@@ -149,6 +155,51 @@ defmodule Cerebelum.Execution.Engine.Data do
   end
 
   @doc """
+  Updates the current step index.
+
+  ## Examples
+
+      iex> data = %Data{current_step_index: 0}
+      iex> data = Data.update_current_step_index(data, 5)
+      iex> data.current_step_index
+      5
+  """
+  @spec update_current_step_index(t(), non_neg_integer()) :: t()
+  def update_current_step_index(data, new_index) do
+    %{data | current_step_index: new_index}
+  end
+
+  @doc """
+  Updates the results cache.
+
+  ## Examples
+
+      iex> data = %Data{results: %{}}
+      iex> data = Data.update_results(data, %{step1: :result1})
+      iex> data.results
+      %{step1: :result1}
+  """
+  @spec update_results(t(), map()) :: t()
+  def update_results(data, new_results) do
+    %{data | results: new_results}
+  end
+
+  @doc """
+  Increments the iteration counter (for loop detection).
+
+  ## Examples
+
+      iex> data = %Data{iteration: 0}
+      iex> data = Data.increment_iteration(data)
+      iex> data.iteration
+      1
+  """
+  @spec increment_iteration(t()) :: t()
+  def increment_iteration(data) do
+    %{data | iteration: data.iteration + 1}
+  end
+
+  @doc """
   Builds a status map for the current execution state.
 
   ## Examples
@@ -180,7 +231,8 @@ defmodule Cerebelum.Execution.Engine.Data do
         completed_steps: data.current_step_index,
         total_steps: timeline_length,
         results: data.results,
-        context: data.context
+        context: data.context,
+        iteration: data.iteration
       },
       error_info
     )
