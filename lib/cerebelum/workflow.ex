@@ -79,17 +79,31 @@ defmodule Cerebelum.Workflow do
       Module.register_attribute(__MODULE__, :cerebelum_branches, accumulate: true)
 
       # Import DSL macros
-      import Cerebelum.Workflow.DSL
+      use Cerebelum.Workflow.DSL
 
       @before_compile Cerebelum.Workflow
     end
   end
 
   @doc false
-  defmacro __before_compile__(_env) do
+  defmacro __before_compile__(env) do
+    # Obtener los attributes en compile-time
+    timeline = Module.get_attribute(env.module, :cerebelum_timeline) || []
+    diverges = Module.get_attribute(env.module, :cerebelum_diverges) || []
+    branches = Module.get_attribute(env.module, :cerebelum_branches) || []
+
+    # Construir metadata para validación
+    metadata = %{
+      timeline: timeline,
+      diverges: Enum.into(diverges, %{}),
+      branches: Enum.into(branches, %{})
+    }
+
+    # Validar en compile-time
+    Cerebelum.Workflow.Validator.validate(env.module, metadata, env)
+
     quote do
       # Esta función será inyectada automáticamente
-      # En L2.2 la implementaremos completamente
       def __workflow_metadata__ do
         %{
           timeline: @cerebelum_timeline || [],
@@ -101,8 +115,19 @@ defmodule Cerebelum.Workflow do
 
       # Compute version basado en el bytecode del módulo
       defp compute_version do
-        # Por ahora un placeholder, en L2.3 lo implementaremos
-        "v1.0.0"
+        # Obtener el bytecode del módulo compilado
+        case :code.get_object_code(__MODULE__) do
+          {_module, bytecode, _filename} ->
+            # Calcular SHA256 del bytecode
+            :crypto.hash(:sha256, bytecode)
+            |> Base.encode16(case: :lower)
+            |> String.slice(0, 16)  # Tomar primeros 16 caracteres
+
+          :error ->
+            # Fallback si no se puede obtener el bytecode
+            # (puede ocurrir durante la compilación)
+            "unknown"
+        end
       end
     end
   end

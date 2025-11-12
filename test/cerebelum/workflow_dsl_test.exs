@@ -233,52 +233,57 @@ defmodule Cerebelum.Workflow.DSLTest do
   end
 
   describe "parse helpers" do
-    alias Cerebelum.Workflow.DSL
+    alias Cerebelum.Workflow.DSL.Timeline.TimelineParser
+    alias Cerebelum.Workflow.DSL.Diverge.DivergeParser
+    alias Cerebelum.Workflow.DSL.Branch.BranchParser
 
-    test "extract_function_name/1 extracts from function call" do
-      ast = quote(do: validate_order())
-      assert DSL.extract_function_name(ast) == :validate_order
-    end
-
-    test "extract_function_name/1 handles atom directly" do
-      assert DSL.extract_function_name(:step1) == :step1
-    end
-
-    test "parse_timeline_pipeline/1 parses simple pipeline" do
+    test "TimelineParser.parse_timeline_pipeline/1 parses simple pipeline" do
       pipeline = quote(do: step1() |> step2() |> step3())
-      steps = DSL.parse_timeline_pipeline(pipeline)
+      steps = TimelineParser.parse_timeline_pipeline(pipeline)
 
       assert steps == [:step1, :step2, :step3]
     end
 
-    test "parse_timeline_pipeline/1 handles single step" do
+    test "TimelineParser.parse_timeline_pipeline/1 handles single step" do
       pipeline = quote(do: step1())
-      steps = DSL.parse_timeline_pipeline(pipeline)
+      steps = TimelineParser.parse_timeline_pipeline(pipeline)
 
       assert steps == [:step1]
     end
 
-    test "parse_match_block/1 parses pattern clauses" do
+    test "DivergeParser.extract_step_name/1 extracts from function call" do
+      assert DivergeParser.extract_step_name(from: quote(do: validate_order())) == :validate_order
+    end
+
+    test "DivergeParser.extract_step_name/1 handles atom directly" do
+      assert DivergeParser.extract_step_name(from: :step1) == :step1
+    end
+
+    test "DivergeParser.parse_match_block/1 parses pattern clauses" do
       block =
         quote do
           :timeout -> :retry
           {:error, _} -> :failed
         end
 
-      patterns = DSL.parse_match_block(block)
+      patterns = DivergeParser.parse_match_block(block)
 
       assert length(patterns) == 2
       assert {:timeout, :retry} in patterns
     end
 
-    test "parse_condition_block/1 parses conditional clauses" do
+    test "BranchParser.extract_step_name/1 extracts from function call" do
+      assert BranchParser.extract_step_name(after: quote(do: calculate())) == :calculate
+    end
+
+    test "BranchParser.parse_condition_block/1 parses conditional clauses" do
       block =
         quote do
           result > 0.8 -> :high
           true -> :low
         end
 
-      conditions = DSL.parse_condition_block(block, :result)
+      conditions = BranchParser.parse_condition_block(block, :result)
 
       assert length(conditions) == 2
       assert Enum.all?(conditions, fn {_cond, action} -> is_atom(action) end)

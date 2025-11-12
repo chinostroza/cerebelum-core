@@ -1,69 +1,48 @@
-# Definir structs primero
-defmodule Cerebelum.FlowAction.Continue do
-  @moduledoc """
-  Acción que indica continuar al siguiente step del timeline.
-  """
-
-  @enforce_keys []
-  defstruct []
-
-  @type t :: %__MODULE__{}
-end
-
-defmodule Cerebelum.FlowAction.BackTo do
-  @moduledoc """
-  Acción que indica volver a un step anterior.
-
-  Usado típicamente para retry patterns o loops hacia atrás.
-  """
-
-  @enforce_keys [:step]
-  defstruct [:step]
-
-  @type t :: %__MODULE__{
-    step: atom()
-  }
-end
-
-defmodule Cerebelum.FlowAction.SkipTo do
-  @moduledoc """
-  Acción que indica saltar a un step adelante.
-
-  Usado para fast-forward o conditional branches.
-  """
-
-  @enforce_keys [:step]
-  defstruct [:step]
-
-  @type t :: %__MODULE__{
-    step: atom()
-  }
-end
-
-defmodule Cerebelum.FlowAction.Failed do
-  @moduledoc """
-  Acción que indica terminar la ejecución con error.
-
-  Contiene la razón del fallo.
-  """
-
-  @enforce_keys [:reason]
-  defstruct [:reason]
-
-  @type t :: %__MODULE__{
-    reason: any()
-  }
-end
-
-# Módulo principal con helpers
 defmodule Cerebelum.FlowAction do
   @moduledoc """
   Flow control actions para workflows.
 
-  Estas acciones determinan cómo continúa la ejecución después de
-  evaluar un `diverge()` o `branch()`.
+  Este módulo es un **orquestador** que re-exporta todas las flow actions.
+
+  ## Arquitectura - Package by Feature
+
+  Cada acción tiene su propio directorio:
+
+  ```
+  flow_action/
+  ├── continue/
+  │   └── continue_action.ex
+  ├── back_to/
+  │   └── back_to_action.ex
+  ├── skip_to/
+  │   └── skip_to_action.ex
+  └── failed/
+      └── failed_action.ex
+  ```
+
+  ## Principios
+
+  ### Package by Feature (no by Layer)
+  - ✅ `flow_action/continue/` - Feature completa autocontenida
+  - ✅ `flow_action/back_to/` - Feature completa autocontenida
+  - ✅ `flow_action/skip_to/` - Feature completa autocontenida
+  - ✅ `flow_action/failed/` - Feature completa autocontenida
+  - ❌ Un archivo monolítico con todas las acciones
+
+  ### CERO Acoplamiento entre Features
+  - Modificar `continue/` → No afecta `back_to/`
+  - Borrar `skip_to/` → `rm -rf flow_action/skip_to/`
+  - Agregar nueva acción → `mkdir flow_action/nueva_accion/`
+
+  ### Cohesión Máxima
+  - TODO continue está en `flow_action/continue/`
+  - TODO back_to está en `flow_action/back_to/`
+  - Todo está donde lo esperas encontrar
 
   ## Acciones Disponibles
+
+  Estas acciones determinan cómo continúa la ejecución después de
+  evaluar un `diverge()` o `branch()`.
 
   - `Continue` - Continuar al siguiente step del timeline
   - `BackTo` - Volver a un step anterior (ej: retry)
@@ -86,23 +65,23 @@ defmodule Cerebelum.FlowAction do
 
   @type t :: Continue.t() | BackTo.t() | SkipTo.t() | Failed.t()
 
-  # Constructores
+  # Constructores - Delegan a los módulos individuales
 
   @doc "Crea una acción Continue"
   @spec continue() :: Continue.t()
-  def continue, do: %Continue{}
+  def continue, do: Continue.new()
 
   @doc "Crea una acción BackTo que vuelve a un step anterior"
   @spec back_to(atom()) :: BackTo.t()
-  def back_to(step) when is_atom(step), do: %BackTo{step: step}
+  def back_to(step) when is_atom(step), do: BackTo.new(step)
 
   @doc "Crea una acción SkipTo que salta a un step adelante"
   @spec skip_to(atom()) :: SkipTo.t()
-  def skip_to(step) when is_atom(step), do: %SkipTo{step: step}
+  def skip_to(step) when is_atom(step), do: SkipTo.new(step)
 
   @doc "Crea una acción Failed que termina la ejecución"
   @spec failed(any()) :: Failed.t()
-  def failed(reason), do: %Failed{reason: reason}
+  def failed(reason), do: Failed.new(reason)
 
   # Type guards
 
@@ -110,9 +89,9 @@ defmodule Cerebelum.FlowAction do
   @spec is_flow_action?(any()) :: boolean()
   def is_flow_action?(term) do
     match?(%Continue{}, term) or
-    match?(%BackTo{}, term) or
-    match?(%SkipTo{}, term) or
-    match?(%Failed{}, term)
+      match?(%BackTo{}, term) or
+      match?(%SkipTo{}, term) or
+      match?(%Failed{}, term)
   end
 
   @doc "Verifica si es una acción Continue"

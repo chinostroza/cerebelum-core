@@ -1,131 +1,48 @@
-# Event Structs - Definir primero
-
-defmodule Cerebelum.Event.ExecutionStarted do
-  @moduledoc """
-  Evento emitido cuando una ejecución de workflow inicia.
-  """
-
-  @enforce_keys [:execution_id, :workflow_module, :inputs, :occurred_at]
-  defstruct [:execution_id, :workflow_module, :inputs, :occurred_at]
-
-  @type t :: %__MODULE__{
-          execution_id: String.t(),
-          workflow_module: module(),
-          inputs: map(),
-          occurred_at: DateTime.t()
-        }
-end
-
-defmodule Cerebelum.Event.StepStarted do
-  @moduledoc """
-  Evento emitido cuando un step inicia su ejecución.
-  """
-
-  @enforce_keys [:execution_id, :step_name, :occurred_at]
-  defstruct [:execution_id, :step_name, :occurred_at]
-
-  @type t :: %__MODULE__{
-          execution_id: String.t(),
-          step_name: atom(),
-          occurred_at: DateTime.t()
-        }
-end
-
-defmodule Cerebelum.Event.StepCompleted do
-  @moduledoc """
-  Evento emitido cuando un step termina exitosamente.
-  """
-
-  @enforce_keys [:execution_id, :step_name, :result, :occurred_at]
-  defstruct [:execution_id, :step_name, :result, :occurred_at]
-
-  @type t :: %__MODULE__{
-          execution_id: String.t(),
-          step_name: atom(),
-          result: any(),
-          occurred_at: DateTime.t()
-        }
-end
-
-defmodule Cerebelum.Event.StepFailed do
-  @moduledoc """
-  Evento emitido cuando un step falla.
-  """
-
-  @enforce_keys [:execution_id, :step_name, :error, :occurred_at]
-  defstruct [:execution_id, :step_name, :error, :stacktrace, :occurred_at]
-
-  @type t :: %__MODULE__{
-          execution_id: String.t(),
-          step_name: atom(),
-          error: any(),
-          stacktrace: list() | nil,
-          occurred_at: DateTime.t()
-        }
-end
-
-defmodule Cerebelum.Event.ExecutionCompleted do
-  @moduledoc """
-  Evento emitido cuando toda la ejecución termina exitosamente.
-  """
-
-  @enforce_keys [:execution_id, :final_result, :occurred_at]
-  defstruct [:execution_id, :final_result, :occurred_at]
-
-  @type t :: %__MODULE__{
-          execution_id: String.t(),
-          final_result: any(),
-          occurred_at: DateTime.t()
-        }
-end
-
-defmodule Cerebelum.Event.ExecutionFailed do
-  @moduledoc """
-  Evento emitido cuando toda la ejecución falla.
-  """
-
-  @enforce_keys [:execution_id, :reason, :failed_step, :occurred_at]
-  defstruct [:execution_id, :reason, :failed_step, :occurred_at]
-
-  @type t :: %__MODULE__{
-          execution_id: String.t(),
-          reason: any(),
-          failed_step: atom(),
-          occurred_at: DateTime.t()
-        }
-end
-
-defmodule Cerebelum.Event.CheckpointCreated do
-  @moduledoc """
-  Evento emitido cuando se crea un checkpoint (snapshot) del estado.
-
-  Los checkpoints permiten optimizar el replay: en lugar de reproducir
-  todos los eventos desde el inicio, podemos empezar desde el último checkpoint.
-  """
-
-  @enforce_keys [:execution_id, :step_name, :context, :results_cache, :occurred_at]
-  defstruct [:execution_id, :step_name, :context, :results_cache, :occurred_at]
-
-  @type t :: %__MODULE__{
-          execution_id: String.t(),
-          step_name: atom(),
-          context: any(),
-          results_cache: map(),
-          occurred_at: DateTime.t()
-        }
-end
-
-# Módulo principal con constructores y helpers
 defmodule Cerebelum.Event do
   @moduledoc """
   Event schemas para Event Sourcing en Cerebelum.
 
-  Estos eventos se persisten en el Event Store y permiten reconstruir
-  el estado completo de una ejecución en cualquier momento.
+  Este módulo es un **orquestador** que re-exporta todos los eventos.
+
+  ## Arquitectura - Package by Feature
+
+  Cada tipo de evento tiene su propio directorio:
+
+  ```
+  event/
+  ├── workflow/
+  │   ├── execution_started_event.ex
+  │   ├── execution_completed_event.ex
+  │   └── execution_failed_event.ex
+  ├── step/
+  │   ├── step_started_event.ex
+  │   ├── step_completed_event.ex
+  │   └── step_failed_event.ex
+  └── checkpoint/
+      └── checkpoint_created_event.ex
+  ```
+
+  ## Principios
+
+  ### Package by Feature (no by Layer)
+  - ✅ `event/workflow/` - Todos los eventos de workflow juntos
+  - ✅ `event/step/` - Todos los eventos de step juntos
+  - ✅ `event/checkpoint/` - Feature transversal de checkpoints
+  - ❌ Un archivo monolítico con todos los eventos
+
+  ### CERO Acoplamiento entre Features
+  - Modificar `workflow/` → No afecta `step/`
+  - Borrar `checkpoint/` → `rm -rf event/checkpoint/`
+  - Agregar nuevo evento → Añadir en el directorio correspondiente
+
+  ### Cohesión Máxima
+  - TODO workflow está en `event/workflow/`
+  - TODO step está en `event/step/`
+  - Todo está donde lo esperas encontrar
 
   ## Tipos de Eventos
 
-  - **Execution Events**: `ExecutionStarted`, `ExecutionCompleted`, `ExecutionFailed`
+  - **Workflow Events**: `ExecutionStarted`, `ExecutionCompleted`, `ExecutionFailed`
   - **Step Events**: `StepStarted`, `StepCompleted`, `StepFailed`
   - **Checkpoint Events**: `CheckpointCreated`
 
@@ -162,83 +79,48 @@ defmodule Cerebelum.Event do
           | ExecutionFailed.t()
           | CheckpointCreated.t()
 
-  # Constructores
+  # Constructores - Delegan a los módulos individuales
 
   @doc "Crea un evento ExecutionStarted"
   @spec execution_started(String.t(), module(), map()) :: ExecutionStarted.t()
   def execution_started(execution_id, workflow_module, inputs) do
-    %ExecutionStarted{
-      execution_id: execution_id,
-      workflow_module: workflow_module,
-      inputs: inputs,
-      occurred_at: DateTime.utc_now()
-    }
+    ExecutionStarted.new(execution_id, workflow_module, inputs)
   end
 
   @doc "Crea un evento StepStarted"
   @spec step_started(String.t(), atom()) :: StepStarted.t()
   def step_started(execution_id, step_name) do
-    %StepStarted{
-      execution_id: execution_id,
-      step_name: step_name,
-      occurred_at: DateTime.utc_now()
-    }
+    StepStarted.new(execution_id, step_name)
   end
 
   @doc "Crea un evento StepCompleted"
   @spec step_completed(String.t(), atom(), any()) :: StepCompleted.t()
   def step_completed(execution_id, step_name, result) do
-    %StepCompleted{
-      execution_id: execution_id,
-      step_name: step_name,
-      result: result,
-      occurred_at: DateTime.utc_now()
-    }
+    StepCompleted.new(execution_id, step_name, result)
   end
 
   @doc "Crea un evento StepFailed"
   @spec step_failed(String.t(), atom(), any(), list() | nil) :: StepFailed.t()
   def step_failed(execution_id, step_name, error, stacktrace \\ nil) do
-    %StepFailed{
-      execution_id: execution_id,
-      step_name: step_name,
-      error: error,
-      stacktrace: stacktrace,
-      occurred_at: DateTime.utc_now()
-    }
+    StepFailed.new(execution_id, step_name, error, stacktrace)
   end
 
   @doc "Crea un evento ExecutionCompleted"
   @spec execution_completed(String.t(), any()) :: ExecutionCompleted.t()
   def execution_completed(execution_id, final_result) do
-    %ExecutionCompleted{
-      execution_id: execution_id,
-      final_result: final_result,
-      occurred_at: DateTime.utc_now()
-    }
+    ExecutionCompleted.new(execution_id, final_result)
   end
 
   @doc "Crea un evento ExecutionFailed"
   @spec execution_failed(String.t(), any(), atom()) :: ExecutionFailed.t()
   def execution_failed(execution_id, reason, failed_step) do
-    %ExecutionFailed{
-      execution_id: execution_id,
-      reason: reason,
-      failed_step: failed_step,
-      occurred_at: DateTime.utc_now()
-    }
+    ExecutionFailed.new(execution_id, reason, failed_step)
   end
 
   @doc "Crea un evento CheckpointCreated"
   @spec checkpoint_created(String.t(), atom(), any(), map()) :: CheckpointCreated.t()
   def checkpoint_created(execution_id, step_name, context, results_cache) do
-    %CheckpointCreated{
-      execution_id: execution_id,
-      step_name: step_name,
-      context: context,
-      results_cache: results_cache,
-      occurred_at: DateTime.utc_now()
-    }
+    CheckpointCreated.new(execution_id, step_name, context, results_cache)
   end
 
   # Type guards
