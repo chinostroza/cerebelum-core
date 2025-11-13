@@ -17,7 +17,17 @@ defmodule Cerebelum.Execution.Engine.Data do
           results: ResultsCache.t(),
           current_step_index: non_neg_integer(),
           iteration: non_neg_integer(),
-          error: term() | nil
+          event_version: non_neg_integer(),
+          error: term() | nil,
+          sleep_duration_ms: non_neg_integer() | nil,
+          sleep_started_at: integer() | nil,
+          sleep_step_name: atom() | nil,
+          sleep_result: term() | nil,
+          approval_type: atom() | nil,
+          approval_data: map() | nil,
+          approval_step_name: atom() | nil,
+          approval_timeout_ms: non_neg_integer() | nil,
+          approval_started_at: integer() | nil
         }
 
   defstruct [
@@ -27,7 +37,17 @@ defmodule Cerebelum.Execution.Engine.Data do
     results: %{},
     current_step_index: 0,
     iteration: 0,
-    error: nil
+    event_version: 0,
+    error: nil,
+    sleep_duration_ms: nil,
+    sleep_started_at: nil,
+    sleep_step_name: nil,
+    sleep_result: nil,
+    approval_type: nil,
+    approval_data: nil,
+    approval_step_name: nil,
+    approval_timeout_ms: nil,
+    approval_started_at: nil
   ]
 
   @doc """
@@ -197,6 +217,24 @@ defmodule Cerebelum.Execution.Engine.Data do
   @spec increment_iteration(t()) :: t()
   def increment_iteration(data) do
     %{data | iteration: data.iteration + 1}
+  end
+
+  @doc """
+  Increments the event version counter and returns the new version.
+
+  ## Examples
+
+      iex> data = %Data{event_version: 0}
+      iex> {version, data} = Data.next_event_version(data)
+      iex> version
+      0
+      iex> data.event_version
+      1
+  """
+  @spec next_event_version(t()) :: {non_neg_integer(), t()}
+  def next_event_version(data) do
+    current_version = data.event_version
+    {current_version, %{data | event_version: current_version + 1}}
   end
 
   @doc """

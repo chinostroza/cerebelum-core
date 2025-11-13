@@ -190,4 +190,14 @@ defmodule Cerebelum.Execution.Engine do
   def failed(event_type, event_content, data) do
     StateHandlers.failed(event_type, event_content, data)
   end
+
+  @doc false
+  def sleeping(event_type, event_content, data) do
+    StateHandlers.sleeping(event_type, event_content, data)
+  end
+
+  @doc false
+  def waiting_for_approval(event_type, event_content, data) do
+    StateHandlers.waiting_for_approval(event_type, event_content, data)
+  end
 end

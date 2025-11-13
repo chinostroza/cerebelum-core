@@ -13,6 +13,16 @@ defmodule Cerebelum.Events do
   - `DivergeTakenEvent` - Diverge path is taken (retry, fail, etc)
   - `BranchTakenEvent` - Branch path is taken (business logic routing)
   - `JumpExecutedEvent` - Jump to different step (back_to, skip_to)
+  - `ParallelStartedEvent` - Parallel task execution begins
+  - `ParallelTaskCompletedEvent` - Single parallel task completes
+  - `ParallelTaskFailedEvent` - Single parallel task fails
+  - `ParallelCompletedEvent` - All parallel tasks complete
+  - `SleepStartedEvent` - Execution enters sleep state
+  - `SleepCompletedEvent` - Execution wakes up from sleep
+  - `ApprovalRequestedEvent` - Human approval requested
+  - `ApprovalReceivedEvent` - Approval granted
+  - `ApprovalRejectedEvent` - Approval rejected
+  - `ApprovalTimeoutEvent` - Approval request timed out
   - `ExecutionCompletedEvent` - Workflow completes successfully
   - `ExecutionFailedEvent` - Workflow fails
 
@@ -411,6 +421,425 @@ defmodule Cerebelum.Events do
         error_message: error_message,
         failed_step: failed_step,
         partial_results: partial_results,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule ParallelStartedEvent do
+    @moduledoc """
+    Event fired when parallel task execution begins.
+
+    Contains the step name that initiated parallel execution and list of tasks.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            step_name: atom(),
+            task_specs: [{atom(), list()}],
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :step_name,
+      :task_specs,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), atom(), [{atom(), list()}], non_neg_integer()) :: t()
+    def new(execution_id, step_name, task_specs, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        step_name: step_name,
+        task_specs: task_specs,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule ParallelTaskCompletedEvent do
+    @moduledoc """
+    Event fired when a single parallel task completes successfully.
+
+    Contains task function name, result, and execution duration.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            parent_step: atom(),
+            task_name: atom(),
+            result: term(),
+            duration_ms: non_neg_integer(),
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :parent_step,
+      :task_name,
+      :result,
+      :duration_ms,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), atom(), atom(), term(), non_neg_integer(), non_neg_integer()) :: t()
+    def new(execution_id, parent_step, task_name, result, duration_ms, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        parent_step: parent_step,
+        task_name: task_name,
+        result: result,
+        duration_ms: duration_ms,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule ParallelTaskFailedEvent do
+    @moduledoc """
+    Event fired when a single parallel task fails.
+
+    Contains error information for the failed task.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            parent_step: atom(),
+            task_name: atom(),
+            error_kind: atom(),
+            error_message: String.t(),
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :parent_step,
+      :task_name,
+      :error_kind,
+      :error_message,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), atom(), atom(), atom(), String.t(), non_neg_integer()) :: t()
+    def new(execution_id, parent_step, task_name, error_kind, error_message, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        parent_step: parent_step,
+        task_name: task_name,
+        error_kind: error_kind,
+        error_message: error_message,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule ParallelCompletedEvent do
+    @moduledoc """
+    Event fired when all parallel tasks complete.
+
+    Contains merged results from all tasks.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            parent_step: atom(),
+            merged_result: map(),
+            total_duration_ms: non_neg_integer(),
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :parent_step,
+      :merged_result,
+      :total_duration_ms,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), atom(), map(), non_neg_integer(), non_neg_integer()) :: t()
+    def new(execution_id, parent_step, merged_result, total_duration_ms, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        parent_step: parent_step,
+        merged_result: merged_result,
+        total_duration_ms: total_duration_ms,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule SleepStartedEvent do
+    @moduledoc """
+    Event fired when execution enters sleep state.
+
+    Contains duration and the step that initiated the sleep.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            step_name: atom(),
+            duration_ms: non_neg_integer(),
+            resume_at: DateTime.t(),
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :step_name,
+      :duration_ms,
+      :resume_at,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), atom(), non_neg_integer(), non_neg_integer()) :: t()
+    def new(execution_id, step_name, duration_ms, version) do
+      resume_at = DateTime.add(DateTime.utc_now(), duration_ms, :millisecond)
+
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        step_name: step_name,
+        duration_ms: duration_ms,
+        resume_at: resume_at,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule SleepCompletedEvent do
+    @moduledoc """
+    Event fired when execution wakes up from sleep.
+
+    Contains actual sleep duration.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            actual_duration_ms: non_neg_integer(),
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :actual_duration_ms,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), non_neg_integer(), non_neg_integer()) :: t()
+    def new(execution_id, actual_duration_ms, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        actual_duration_ms: actual_duration_ms,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule ApprovalRequestedEvent do
+    @moduledoc """
+    Event fired when execution pauses waiting for human approval.
+
+    Contains approval type and contextual data.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            step_name: atom(),
+            approval_type: atom(),
+            approval_data: map(),
+            timeout_ms: non_neg_integer() | nil,
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :step_name,
+      :approval_type,
+      :approval_data,
+      :timeout_ms,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), atom(), atom(), map(), non_neg_integer() | nil, non_neg_integer()) :: t()
+    def new(execution_id, step_name, approval_type, approval_data, timeout_ms, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        step_name: step_name,
+        approval_type: approval_type,
+        approval_data: approval_data,
+        timeout_ms: timeout_ms,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule ApprovalReceivedEvent do
+    @moduledoc """
+    Event fired when approval is granted.
+
+    Contains decision and approver data.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            step_name: atom(),
+            approval_response: map(),
+            elapsed_ms: non_neg_integer(),
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :step_name,
+      :approval_response,
+      :elapsed_ms,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), atom(), map(), non_neg_integer(), non_neg_integer()) :: t()
+    def new(execution_id, step_name, approval_response, elapsed_ms, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        step_name: step_name,
+        approval_response: approval_response,
+        elapsed_ms: elapsed_ms,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule ApprovalRejectedEvent do
+    @moduledoc """
+    Event fired when approval is rejected.
+
+    Contains rejection reason.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            step_name: atom(),
+            rejection_reason: term(),
+            elapsed_ms: non_neg_integer(),
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :step_name,
+      :rejection_reason,
+      :elapsed_ms,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), atom(), term(), non_neg_integer(), non_neg_integer()) :: t()
+    def new(execution_id, step_name, rejection_reason, elapsed_ms, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        step_name: step_name,
+        rejection_reason: rejection_reason,
+        elapsed_ms: elapsed_ms,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule ApprovalTimeoutEvent do
+    @moduledoc """
+    Event fired when approval request times out.
+
+    Contains timeout duration.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            step_name: atom(),
+            timeout_ms: non_neg_integer(),
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :step_name,
+      :timeout_ms,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), atom(), non_neg_integer(), non_neg_integer()) :: t()
+    def new(execution_id, step_name, timeout_ms, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        step_name: step_name,
+        timeout_ms: timeout_ms,
         timestamp: DateTime.utc_now(),
         version: version
       }

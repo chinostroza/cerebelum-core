@@ -6,7 +6,15 @@ defmodule Cerebelum.Execution.ErrorInfo do
   """
 
   @type error_kind ::
-          :exception | :exit | :throw | :timeout | :diverge_failed | :invalid_jump | :infinite_loop
+          :exception
+          | :exit
+          | :throw
+          | :timeout
+          | :diverge_failed
+          | :invalid_jump
+          | :infinite_loop
+          | :approval_rejected
+          | :approval_timeout
   @type t :: %__MODULE__{
           kind: error_kind(),
           step_name: atom(),
@@ -176,6 +184,48 @@ defmodule Cerebelum.Execution.ErrorInfo do
   end
 
   @doc """
+  Creates a new ErrorInfo struct from an approval rejection.
+
+  ## Examples
+
+      iex> error = ErrorInfo.from_approval_rejected(:review_step, "Not approved by manager", "exec-123")
+      iex> error.kind
+      :approval_rejected
+  """
+  @spec from_approval_rejected(atom(), term(), String.t()) :: t()
+  def from_approval_rejected(step_name, reason, execution_id) do
+    %__MODULE__{
+      kind: :approval_rejected,
+      step_name: step_name,
+      reason: reason,
+      stacktrace: nil,
+      execution_id: execution_id,
+      timestamp: DateTime.utc_now()
+    }
+  end
+
+  @doc """
+  Creates a new ErrorInfo struct from an approval timeout.
+
+  ## Examples
+
+      iex> error = ErrorInfo.from_approval_timeout(:review_step, 60000, "exec-123")
+      iex> error.kind
+      :approval_timeout
+  """
+  @spec from_approval_timeout(atom(), non_neg_integer(), String.t()) :: t()
+  def from_approval_timeout(step_name, timeout_ms, execution_id) do
+    %__MODULE__{
+      kind: :approval_timeout,
+      step_name: step_name,
+      reason: "Approval timeout after #{timeout_ms}ms",
+      stacktrace: nil,
+      execution_id: execution_id,
+      timestamp: DateTime.utc_now()
+    }
+  end
+
+  @doc """
   Formats the error as a human-readable string.
 
   ## Examples
@@ -209,6 +259,12 @@ defmodule Cerebelum.Execution.ErrorInfo do
 
       :infinite_loop ->
         "Infinite loop detected - #{error.reason}"
+
+      :approval_rejected ->
+        "Approval rejected in step :#{error.step_name} - reason: #{inspect(error.reason)}"
+
+      :approval_timeout ->
+        "Approval timeout in step :#{error.step_name} - #{error.reason}"
     end
   end
 

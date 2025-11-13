@@ -109,25 +109,8 @@ defmodule Cerebelum.Workflow do
           timeline: @cerebelum_timeline || [],
           diverges: (@cerebelum_diverges || []) |> Enum.into(%{}),
           branches: (@cerebelum_branches || []) |> Enum.into(%{}),
-          version: compute_version()
+          version: Cerebelum.Workflow.Versioning.compute_version(__MODULE__)
         }
-      end
-
-      # Compute version basado en el bytecode del módulo
-      defp compute_version do
-        # Obtener el bytecode del módulo compilado
-        case :code.get_object_code(__MODULE__) do
-          {_module, bytecode, _filename} ->
-            # Calcular SHA256 del bytecode
-            :crypto.hash(:sha256, bytecode)
-            |> Base.encode16(case: :lower)
-            |> String.slice(0, 16)  # Tomar primeros 16 caracteres
-
-          :error ->
-            # Fallback si no se puede obtener el bytecode
-            # (puede ocurrir durante la compilación)
-            "unknown"
-        end
       end
     end
   end

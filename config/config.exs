@@ -3,8 +3,7 @@ import Config
 # Configure Ecto Repo
 config :cerebelum_core, Cerebelum.Repo,
   database: "cerebelum_core_dev",
-  username: "postgres",
-  password: "postgres",
+  username: "dev",
   hostname: "localhost",
   pool_size: 10
 

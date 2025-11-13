@@ -3,8 +3,7 @@ import Config
 # Test database config
 config :cerebelum_core, Cerebelum.Repo,
   database: "cerebelum_core_test#{System.get_env("MIX_TEST_PARTITION")}",
-  username: "postgres",
-  password: "postgres",
+  username: "dev",
   hostname: "localhost",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 10
