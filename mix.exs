@@ -99,7 +99,6 @@ defmodule CerebelumCore.MixProject do
       # gRPC for multi-language SDK support
       {:grpc, "~> 0.11"},
       {:protobuf, "~> 0.14"},
-      {:google_protos, "~> 0.4"},
 
       # Development & Testing
       {:excoveralls, "~> 0.18", only: :test},
