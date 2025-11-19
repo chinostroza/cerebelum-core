@@ -21,3 +21,4 @@ cerebelum_core-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+.DS_Store
