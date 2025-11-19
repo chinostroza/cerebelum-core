@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database (OPTIONAL - comment out if using existing PostgreSQL)
   # Only uncomment this if you don't have PostgreSQL installed on your server

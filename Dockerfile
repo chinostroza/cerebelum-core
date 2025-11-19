@@ -1,14 +1,13 @@
 # ================================
 # Build Stage
 # ================================
-FROM hexpm/elixir:1.17-erlang-27-debian-bookworm-slim AS build
+FROM elixir:1.17-alpine AS build
 
 # Install build dependencies
-RUN apt-get update -y && apt-get install -y \
-    build-essential \
+RUN apk add --no-cache \
+    build-base \
     git \
-    curl \
-    && apt-get clean && rm -f /var/lib/apt/lists/*_*
+    curl
 
 # Prepare build directory
 WORKDIR /app
@@ -49,27 +48,17 @@ RUN mix release
 # ================================
 # Runtime Stage
 # ================================
-FROM debian:bookworm-slim AS runtime
+FROM alpine:3.18 AS runtime
 
 # Install runtime dependencies
-RUN apt-get update -y && \
-    apt-get install -y \
-    libstdc++6 \
+RUN apk add --no-cache \
+    libstdc++ \
     openssl \
-    libncurses6 \
-    locales \
-    ca-certificates \
-    && apt-get clean && rm -f /var/lib/apt/lists/*_*
-
-# Set locale
-RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
-
-ENV LANG=en_US.UTF-8
-ENV LANGUAGE=en_US:en
-ENV LC_ALL=en_US.UTF-8
+    ncurses-libs
 
 # Create app user
-RUN useradd --create-home app
+RUN addgroup -g 1000 app && \
+    adduser -D -u 1000 -G app app
 WORKDIR /home/app
 
 # Set runner ENV
