@@ -1,7 +1,7 @@
 # ================================
 # Build Stage
 # ================================
-FROM hexpm/elixir:1.18.0-erlang-27.1.2-debian-bookworm-20241016-slim AS build
+FROM hexpm/elixir:1.17-erlang-27-debian-bookworm-slim AS build
 
 # Install build dependencies
 RUN apt-get update -y && apt-get install -y \
@@ -49,7 +49,7 @@ RUN mix release
 # ================================
 # Runtime Stage
 # ================================
-FROM debian:bookworm-20241016-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies
 RUN apt-get update -y && \
