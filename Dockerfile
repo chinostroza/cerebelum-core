@@ -1,7 +1,7 @@
 # ================================
 # Build Stage
 # ================================
-FROM elixir:1.17-alpine AS build
+FROM elixir:1.18-alpine AS build
 
 # Install build dependencies
 RUN apk add --no-cache \
