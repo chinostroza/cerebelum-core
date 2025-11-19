@@ -42,10 +42,6 @@ services:
       ENABLE_GRPC_SERVER: ${ENABLE_GRPC_SERVER:-true}
       GRPC_PORT: ${GRPC_PORT:-9090}
 
-      # Release Configuration
-      RELEASE_NODE: ${RELEASE_NODE:-cerebelum@127.0.0.1}
-      RELEASE_COOKIE: ${RELEASE_COOKIE:-cerebelum_cookie_change_me}
-
       # Pool Configuration
       POOL_SIZE: ${POOL_SIZE:-10}
     network_mode: "host"
