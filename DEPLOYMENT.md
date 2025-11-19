@@ -289,15 +289,18 @@ docker compose exec app bin/cerebelum_core eval "Cerebelum.Release.migrate()"
 
 ### Configurar UFW (Ubuntu Firewall)
 
+**IMPORTANTE:** Los puertos 4001 y 9090 están configurados para escuchar **solo en localhost** (127.0.0.1). Esto significa que solo servicios en el mismo servidor pueden acceder a ellos. **NO abras estos puertos en el firewall** a menos que necesites acceso externo.
+
 ```bash
-# Permitir SSH
+# Permitir SSH (NECESARIO)
 sudo ufw allow 22/tcp
 
-# Permitir gRPC (solo si necesitas acceso externo)
-sudo ufw allow 9090/tcp
-
-# Si vas a exponer HTTP API en el futuro
-sudo ufw allow 4001/tcp
+# NO es necesario abrir los puertos 9090 ni 4001
+# porque están configurados para localhost only en docker-compose.yml
+#
+# Solo abre estos puertos si necesitas acceso externo:
+# sudo ufw allow 9090/tcp  # gRPC - solo si necesitas acceso desde otros servidores
+# sudo ufw allow 4001/tcp  # HTTP API - solo si necesitas acceso desde otros servidores
 
 # Activar firewall
 sudo ufw enable
@@ -305,6 +308,11 @@ sudo ufw enable
 # Ver status
 sudo ufw status
 ```
+
+**Ventajas de localhost-only:**
+- Mayor seguridad: Los servicios no son accesibles desde internet
+- Los servicios en el mismo servidor pueden acceder vía `localhost:9090` o `localhost:4001`
+- Ideal cuando tus backends están en el mismo servidor
 
 ### Reverse Proxy con Nginx (Opcional)
 

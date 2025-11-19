@@ -58,8 +58,9 @@ services:
       # Pool Configuration
       POOL_SIZE: ${POOL_SIZE:-10}
     ports:
-      - "${PORT:-4001}:4001"      # HTTP API (future)
-      - "${GRPC_PORT:-9090}:9090" # gRPC Server
+      # Bind to localhost only - services on same server can access via localhost:PORT
+      - "127.0.0.1:${PORT:-4001}:4001"      # HTTP API (localhost only)
+      - "127.0.0.1:${GRPC_PORT:-9090}:9090" # gRPC Server (localhost only)
     volumes:
       # Optional: Mount volume for persistent data if needed
       - app_data:/home/app/data
