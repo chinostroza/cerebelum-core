@@ -3,6 +3,14 @@ defmodule Cerebelum.Execution.EngineTest do
 
   alias Cerebelum.Execution.Engine
   alias Cerebelum.Examples.CounterWorkflow
+  alias Cerebelum.Repo
+
+  setup do
+    # Checkout sandbox connection and use shared mode for spawned processes
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+    Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+    :ok
+  end
 
   describe "start_link/1" do
     test "starts engine with workflow and inputs" do

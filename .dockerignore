@@ -1,0 +1,50 @@
+# Git
+.git
+.gitignore
+
+# Mix
+/_build
+/deps
+*.ez
+
+# Generated on crash by the VM
+erl_crash.dump
+
+# Static artifacts
+/node_modules
+
+# Test
+/cover
+/test
+
+# Environment files
+.env
+.env.*
+
+# Documentation
+/doc
+*.md
+!README.md
+
+# Development files
+.elixir_ls
+.vscode
+.idea
+
+# macOS
+.DS_Store
+
+# Coverage
+/coverage
+*.coverdata
+
+# Backstage (historical docs)
+../cerebelum-backstage
+
+# Temp files
+*.swp
+*.swo
+*~
+
+# Logs
+*.log

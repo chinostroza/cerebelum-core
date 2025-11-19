@@ -72,8 +72,8 @@ defmodule Cerebelum.Workflow.MetadataTest do
       metadata = Metadata.extract(SimpleWorkflow)
 
       assert is_binary(metadata.version)
-      # Durante compilación puede ser "unknown" o un hash válido
-      assert metadata.version == "unknown" or String.match?(metadata.version, ~r/^[0-9a-f]{16}$/)
+      # Durante compilación puede ser "unknown" o un hash válido (SHA256 = 64 hex chars)
+      assert metadata.version == "unknown" or String.match?(metadata.version, ~r/^[0-9a-f]{64}$/)
     end
 
     test "version is consistent for same workflow" do

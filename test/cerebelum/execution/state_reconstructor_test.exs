@@ -7,6 +7,13 @@ defmodule Cerebelum.Execution.StateReconstructorTest do
   alias Cerebelum.Examples.CounterWorkflow
 
   setup do
+    # Checkout sandbox connection for test isolation
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+    Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+
+    # Allow EventStore GenServer to use the sandbox connection
+    Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), Process.whereis(Cerebelum.EventStore))
+
     # Clean up events table before each test (Repo and EventStore already started by app)
     Ecto.Adapters.SQL.query!(Repo, "TRUNCATE TABLE events CASCADE", [])
 

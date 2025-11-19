@@ -3,8 +3,17 @@ defmodule Cerebelum.Execution.SupervisorTest do
 
   alias Cerebelum.Execution.Supervisor
   alias Cerebelum.Examples.CounterWorkflow
+  alias Cerebelum.Repo
+  alias Cerebelum.EventStore
 
   setup do
+    # Checkout sandbox connection for test isolation
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+    Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+
+    # Allow EventStore GenServer to use the sandbox connection
+    Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), Process.whereis(Cerebelum.EventStore))
+
     # Clean up any running executions
     Supervisor.list_executions()
     |> Enum.each(&Supervisor.terminate_execution/1)

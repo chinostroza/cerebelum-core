@@ -358,4 +358,132 @@ defmodule Cerebelum.EventsTest do
       assert decoded_map["error_kind"] == "timeout"
     end
   end
+
+  describe "SleepStartedEvent" do
+    alias Cerebelum.Events.SleepStartedEvent
+
+    test "creates event with sleep duration" do
+      event = SleepStartedEvent.new("exec-123", :sleep_step, 5000, 1)
+
+      assert event.execution_id == "exec-123"
+      assert event.step_name == :sleep_step
+      assert event.duration_ms == 5000
+      assert %DateTime{} = event.resume_at
+      assert event.version == 1
+    end
+
+    test "serializes to JSON" do
+      event = SleepStartedEvent.new("exec-123", :sleep_step, 1000, 1)
+
+      {:ok, json} = Jason.encode(event)
+      assert is_binary(json)
+    end
+  end
+
+  describe "SleepCompletedEvent" do
+    alias Cerebelum.Events.SleepCompletedEvent
+
+    test "creates event with actual duration" do
+      event = SleepCompletedEvent.new("exec-123", 1050, 2)
+
+      assert event.execution_id == "exec-123"
+      assert event.actual_duration_ms == 1050
+      assert event.version == 2
+    end
+
+    test "serializes to JSON" do
+      event = SleepCompletedEvent.new("exec-123", 1000, 1)
+
+      {:ok, json} = Jason.encode(event)
+      assert is_binary(json)
+    end
+  end
+
+  describe "ApprovalRequestedEvent" do
+    alias Cerebelum.Events.ApprovalRequestedEvent
+
+    test "creates event with approval data" do
+      event =
+        ApprovalRequestedEvent.new("exec-123", :review_step, :manual, %{amount: 1000}, 5000, 1)
+
+      assert event.execution_id == "exec-123"
+      assert event.step_name == :review_step
+      assert event.approval_type == :manual
+      assert event.approval_data == %{amount: 1000}
+      assert event.timeout_ms == 5000
+      assert event.version == 1
+    end
+
+    test "serializes to JSON" do
+      event = ApprovalRequestedEvent.new("exec-123", :review, :auto, %{}, 5000, 1)
+
+      {:ok, json} = Jason.encode(event)
+      assert is_binary(json)
+    end
+  end
+
+  describe "ApprovalReceivedEvent" do
+    alias Cerebelum.Events.ApprovalReceivedEvent
+
+    test "creates event with approval response" do
+      event = ApprovalReceivedEvent.new("exec-123", :review_step, %{approved: true}, 100, 2)
+
+      assert event.execution_id == "exec-123"
+      assert event.step_name == :review_step
+      assert event.approval_response == %{approved: true}
+      assert event.elapsed_ms == 100
+      assert event.version == 2
+    end
+
+    test "serializes to JSON" do
+      event = ApprovalReceivedEvent.new("exec-123", :review, %{}, 50, 1)
+
+      {:ok, json} = Jason.encode(event)
+      assert is_binary(json)
+    end
+  end
+
+  describe "ParallelStartedEvent" do
+    alias Cerebelum.Events.ParallelStartedEvent
+
+    test "creates event with task specs" do
+      task_specs = [{:task1, [arg1: 1]}, {:task2, [arg2: 2]}]
+      event = ParallelStartedEvent.new("exec-123", :parallel_step, task_specs, 1)
+
+      assert event.execution_id == "exec-123"
+      assert event.step_name == :parallel_step
+      assert event.task_specs == task_specs
+      assert event.version == 1
+    end
+
+    test "serializes to JSON" do
+      event = ParallelStartedEvent.new("exec-123", :parallel, [], 1)
+
+      {:ok, json} = Jason.encode(event)
+      assert is_binary(json)
+    end
+  end
+
+  describe "ParallelTaskCompletedEvent" do
+    alias Cerebelum.Events.ParallelTaskCompletedEvent
+
+    test "creates event with task result" do
+      event =
+        ParallelTaskCompletedEvent.new("exec-123", :parallel_step, :task1, {:ok, "result"}, 50, 2)
+
+      assert event.execution_id == "exec-123"
+      assert event.parent_step == :parallel_step
+      assert event.task_name == :task1
+      assert event.result == {:ok, "result"}
+      assert event.duration_ms == 50
+      assert event.version == 2
+    end
+
+    test "serializes to JSON" do
+      event = ParallelTaskCompletedEvent.new("exec-123", :step, :task, "result", 10, 1)
+
+      {:ok, json} = Jason.encode(event)
+      assert is_binary(json)
+    end
+  end
 end

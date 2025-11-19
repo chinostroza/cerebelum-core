@@ -229,5 +229,30 @@ defmodule Cerebelum.CondEvaluatorTest do
       assert CondEvaluator.eval_condition(quote(do: x > 15 or y == 20), bindings) == true
       assert CondEvaluator.eval_condition(quote(do: not (x > 15)), bindings) == true
     end
+
+    test "raises KeyError with detailed message when variable is missing" do
+      assert_raise KeyError, ~r/Variable 'missing_var' not found in bindings/, fn ->
+        CondEvaluator.eval_condition(quote(do: missing_var > 10), %{other: 1})
+      end
+    end
+
+    test "raises KeyError listing available variables when variable is missing" do
+      error =
+        assert_raise KeyError, fn ->
+          CondEvaluator.eval_condition(quote(do: x > 10), %{y: 1, z: 2})
+        end
+
+      assert error.message =~ "Available variables: [:y, :z]"
+      assert error.message =~ "Condition: x > 10"
+    end
+
+    test "raises CompileError for invalid syntax in condition" do
+      # Create invalid AST that will cause compilation error
+      invalid_ast = {:invalid_operator, [], [:x, :y]}
+
+      assert_raise CompileError, ~r/Invalid condition syntax/, fn ->
+        CondEvaluator.eval_condition(invalid_ast, %{x: 1, y: 2})
+      end
+    end
   end
 end

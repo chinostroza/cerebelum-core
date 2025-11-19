@@ -1,0 +1,189 @@
+syntax = "proto3";
+
+package cerebelum.worker;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// WorkerService - Main service for SDK worker communication
+service WorkerService {
+  // Worker lifecycle management
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc Unregister(UnregisterRequest) returns (google.protobuf.Empty);
+
+  // Task execution
+  rpc PollForTask(PollRequest) returns (Task);
+  rpc SubmitResult(TaskResult) returns (Ack);
+
+  // Workflow management
+  rpc SubmitBlueprint(Blueprint) returns (BlueprintValidation);
+  rpc ExecuteWorkflow(ExecuteRequest) returns (ExecutionHandle);
+}
+
+// Worker Registration
+
+message RegisterRequest {
+  string worker_id = 1;
+  string language = 2;  // "kotlin", "typescript", "python"
+  repeated string capabilities = 3;  // List of workflow modules this worker can execute
+  map<string, string> metadata = 4;  // Additional worker metadata
+  string version = 5;  // SDK version
+}
+
+message RegisterResponse {
+  bool success = 1;
+  string message = 2;
+  int32 heartbeat_interval_ms = 3;  // How often to send heartbeats (default: 10000)
+}
+
+// Heartbeat
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  WorkerStatus status = 2;
+}
+
+enum WorkerStatus {
+  WORKER_STATUS_UNSPECIFIED = 0;
+  IDLE = 1;
+  BUSY = 2;
+  DRAINING = 3;  // Graceful shutdown in progress
+}
+
+message HeartbeatResponse {
+  bool acknowledged = 1;
+  repeated string commands = 2;  // Commands from server: "shutdown", "cancel_task", etc.
+}
+
+// Unregister
+
+message UnregisterRequest {
+  string worker_id = 1;
+  string reason = 2;  // "shutdown", "error", etc.
+}
+
+// Task Polling
+
+message PollRequest {
+  string worker_id = 1;
+  int32 timeout_ms = 2;  // Long-polling timeout (max 30000ms)
+}
+
+message Task {
+  string task_id = 1;
+  string execution_id = 2;
+  string workflow_module = 3;
+  string step_name = 4;
+  google.protobuf.Struct step_inputs = 5;  // JSON inputs for the step
+  google.protobuf.Struct context = 6;  // Execution context
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// Task Result Submission
+
+message TaskResult {
+  string task_id = 1;
+  string execution_id = 2;
+  string worker_id = 3;
+  TaskStatus status = 4;
+  google.protobuf.Struct result = 5;  // JSON result from step execution
+  ErrorInfo error = 6;  // Present if status is FAILED
+  google.protobuf.Timestamp completed_at = 7;
+}
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  SUCCESS = 1;
+  FAILED = 2;
+  TIMEOUT = 3;
+  CANCELLED = 4;
+}
+
+message ErrorInfo {
+  string kind = 1;  // "exception", "timeout", "validation_error", etc.
+  string message = 2;
+  string stacktrace = 3;
+}
+
+message Ack {
+  bool success = 1;
+  string message = 2;
+}
+
+// Blueprint Submission
+
+message Blueprint {
+  string workflow_module = 1;  // Fully qualified module name
+  string language = 2;  // Source language: "kotlin", "typescript", "python"
+  string source_code = 3;  // Optional: source code for debugging
+  WorkflowDefinition definition = 4;
+  string version = 5;  // Workflow version/hash
+}
+
+message WorkflowDefinition {
+  repeated Step timeline = 1;
+  repeated DivergeRule diverge_rules = 2;
+  repeated BranchRule branch_rules = 3;
+  map<string, InputDefinition> inputs = 4;
+}
+
+message Step {
+  string name = 1;
+  repeated string depends_on = 2;  // Step dependencies
+}
+
+message DivergeRule {
+  string from_step = 1;
+  repeated PatternMatch patterns = 2;
+}
+
+message BranchRule {
+  string from_step = 1;
+  repeated ConditionBranch branches = 2;
+}
+
+message PatternMatch {
+  string pattern = 1;  // Pattern to match (e.g., ":timeout", "{:error, :network}")
+  string target = 2;  // Target step name
+}
+
+message ConditionBranch {
+  string condition = 1;  // Boolean expression
+  string target = 2;  // Target step name
+}
+
+message InputDefinition {
+  string type = 1;  // "string", "integer", "boolean", etc.
+  bool required = 2;
+  google.protobuf.Struct default_value = 3;
+}
+
+message BlueprintValidation {
+  bool valid = 1;
+  repeated string errors = 2;
+  repeated string warnings = 3;
+  string workflow_hash = 4;  // Hash of the workflow definition
+}
+
+// Workflow Execution
+
+message ExecuteRequest {
+  string workflow_module = 1;
+  google.protobuf.Struct inputs = 2;
+  ExecutionOptions options = 3;
+}
+
+message ExecutionOptions {
+  string execution_id = 1;  // Optional custom execution ID
+  string correlation_id = 2;  // For tracing
+  repeated string tags = 3;  // Metadata tags
+  int32 timeout_ms = 4;  // Execution timeout
+}
+
+message ExecutionHandle {
+  string execution_id = 1;
+  string status = 2;  // "running", "completed", "failed"
+  google.protobuf.Timestamp started_at = 3;
+}

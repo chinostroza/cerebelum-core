@@ -2,10 +2,18 @@ defmodule Cerebelum.Integration.DivergeBranchIntegrationTest do
   use ExUnit.Case, async: true
 
   alias Cerebelum
+  alias Cerebelum.Repo
 
   doctest Cerebelum
 
   @moduletag :integration
+
+  setup do
+    # Checkout sandbox connection and use shared mode for spawned processes
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+    Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+    :ok
+  end
 
   describe "Workflow with diverge and branch" do
     defmodule RetryWorkflow do
@@ -65,17 +73,33 @@ defmodule Cerebelum.Integration.DivergeBranchIntegrationTest do
         {:ok, "HIGH RISK PATH: #{risk.score}"}
       end
 
-      # Medium risk path
+      # Medium risk path - normal flow after high_risk
       def medium_risk(_context, _risk_result, {:ok, high_result}) do
         {:ok, "MEDIUM RISK PATH: after #{high_result}"}
       end
 
-      # Low risk path
+      # Medium risk path - branch jumped here (high_risk skipped)
+      def medium_risk(_context, {:ok, risk}, nil) do
+        {:ok, "MEDIUM RISK PATH: direct (score: #{risk.score})"}
+      end
+
+      # Low risk path - normal flow after medium_risk
       def low_risk(_context, _risk, _high, {:ok, medium_result}) do
         {:ok, "LOW RISK PATH: after #{medium_result}"}
       end
 
+      # Low risk path - branch jumped here (high and medium skipped)
+      def low_risk(_context, {:ok, risk}, nil, nil) do
+        {:ok, "LOW RISK PATH: direct (score: #{risk.score})"}
+      end
+
+      # Complete - after full flow
       def complete(_context, _risk, _high, _medium, {:ok, low_result}) do
+        {:ok, "completed: #{low_result}"}
+      end
+
+      # Complete - when low_risk was reached via branch
+      def complete(_context, {:ok, _risk}, _high, _medium, {:ok, low_result}) do
         {:ok, "completed: #{low_result}"}
       end
     end

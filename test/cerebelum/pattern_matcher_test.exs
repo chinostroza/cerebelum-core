@@ -163,5 +163,61 @@ defmodule Cerebelum.PatternMatcherTest do
       refute PatternMatcher.matches?({:error, :network}, {:error, :timeout})
       refute PatternMatcher.matches?({:error, :_}, :error)
     end
+
+    test "matches lists with exact values" do
+      assert PatternMatcher.matches?([1, 2, 3], [1, 2, 3])
+      assert PatternMatcher.matches?([:a, :b], [:a, :b])
+    end
+
+    test "matches lists with wildcards" do
+      assert PatternMatcher.matches?([:_, :b], [:a, :b])
+      assert PatternMatcher.matches?([:a, :_], [:a, :anything])
+    end
+
+    test "does not match lists of different lengths" do
+      refute PatternMatcher.matches?([1, 2], [1, 2, 3])
+      refute PatternMatcher.matches?([1, 2, 3], [1, 2])
+    end
+
+    test "matches numbers exactly" do
+      assert PatternMatcher.matches?(42, 42)
+      assert PatternMatcher.matches?(3.14, 3.14)
+      refute PatternMatcher.matches?(42, 43)
+    end
+
+    test "matches strings exactly" do
+      assert PatternMatcher.matches?("hello", "hello")
+      refute PatternMatcher.matches?("hello", "world")
+    end
+
+    test "does not match tuples of different sizes" do
+      refute PatternMatcher.matches?({:error, :timeout}, {:error, :timeout, :extra})
+      refute PatternMatcher.matches?({:a, :b, :c}, {:a, :b})
+    end
+
+    test "matches empty tuples" do
+      assert PatternMatcher.matches?({}, {})
+    end
+  end
+
+  describe "match/2 - lists" do
+    test "matches lists with exact values" do
+      patterns = [
+        {[1, 2, 3], :exact_list_action}
+      ]
+
+      assert {:ok, :exact_list_action} = PatternMatcher.match(patterns, [1, 2, 3])
+      assert :no_match = PatternMatcher.match(patterns, [1, 2, 4])
+    end
+
+    test "matches lists with wildcards" do
+      patterns = [
+        {[:error, :_], :error_list_action}
+      ]
+
+      assert {:ok, :error_list_action} = PatternMatcher.match(patterns, [:error, :network])
+      assert {:ok, :error_list_action} = PatternMatcher.match(patterns, [:error, :timeout])
+      assert :no_match = PatternMatcher.match(patterns, [:ok, :data])
+    end
   end
 end

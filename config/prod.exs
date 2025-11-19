@@ -1,7 +1,11 @@
 import Config
 
-# Production database config (from environment variables)
-config :cerebelum_core, Cerebelum.Repo,
-  url: System.get_env("DATABASE_URL"),
-  pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
-  ssl: true
+# Production configuration
+# Runtime configuration (environment variables) is loaded in config/runtime.exs
+
+# Do not print debug messages in production
+config :logger, level: :info
+
+# Enable server by default
+config :cerebelum_core,
+  server: true

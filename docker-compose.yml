@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database (OPTIONAL - comment out if using existing PostgreSQL)
+  # Only uncomment this if you don't have PostgreSQL installed on your server
+  # db:
+  #   image: postgres:16-alpine
+  #   container_name: cerebelum_db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: ${DATABASE_USER:-cerebelum}
+  #     POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-cerebelum_secret}
+  #     POSTGRES_DB: ${DATABASE_NAME:-cerebelum_prod}
+  #     PGDATA: /var/lib/postgresql/data/pgdata
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "${DATABASE_PORT:-5432}:5432"
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-cerebelum}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - cerebelum_network
+
+  # Cerebelum Core Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cerebelum_app
+    restart: unless-stopped
+    # Remove depends_on if using external PostgreSQL
+    # depends_on:
+    #   db:
+    #     condition: service_healthy
+    environment:
+      # Database Configuration
+      # For external PostgreSQL on same host: use host.docker.internal
+      # For external PostgreSQL on different host: use the hostname/IP
+      # For Docker PostgreSQL service: use 'db'
+      DATABASE_URL: "ecto://${DATABASE_USER:-cerebelum}:${DATABASE_PASSWORD:-cerebelum_secret}@${DATABASE_HOST:-host.docker.internal}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-cerebelum_prod}"
+
+      # Application Configuration
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      PHX_HOST: ${PHX_HOST:-localhost}
+      PORT: ${PORT:-4001}
+
+      # gRPC Configuration
+      ENABLE_GRPC_SERVER: ${ENABLE_GRPC_SERVER:-true}
+      GRPC_PORT: ${GRPC_PORT:-9090}
+
+      # Release Configuration
+      RELEASE_NODE: ${RELEASE_NODE:-cerebelum@127.0.0.1}
+      RELEASE_COOKIE: ${RELEASE_COOKIE:-cerebelum_cookie_change_me}
+
+      # Pool Configuration
+      POOL_SIZE: ${POOL_SIZE:-10}
+    ports:
+      - "${PORT:-4001}:4001"      # HTTP API (future)
+      - "${GRPC_PORT:-9090}:9090" # gRPC Server
+    volumes:
+      # Optional: Mount volume for persistent data if needed
+      - app_data:/home/app/data
+    networks:
+      - cerebelum_network
+    healthcheck:
+      test: ["CMD", "bin/cerebelum_core", "rpc", "1 + 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  postgres_data:
+    driver: local
+  app_data:
+    driver: local
+
+networks:
+  cerebelum_network:
+    driver: bridge

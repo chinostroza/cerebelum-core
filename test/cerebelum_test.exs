@@ -2,8 +2,17 @@ defmodule CerebelumTest do
   use ExUnit.Case, async: false
 
   alias Cerebelum.Examples.CounterWorkflow
+  alias Cerebelum.Repo
+  alias Cerebelum.EventStore
 
   setup do
+    # Checkout sandbox connection for test isolation
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+    Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+
+    # Allow EventStore GenServer to use the sandbox connection
+    Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), Process.whereis(Cerebelum.EventStore))
+
     # Clean up any executions from previous tests
     Cerebelum.list_executions()
     |> Enum.each(fn exec -> Cerebelum.stop_execution(exec.pid) end)
