@@ -15,36 +15,38 @@ Script de prueba simple en Python para verificar que el servidor gRPC está func
 # 1. Ir al directorio del proyecto
 cd ~/cerebelum-core/examples
 
-# 2. Instalar las dependencias de Python
-pip3 install grpcio grpcio-tools
+# 2. Crear y activar entorno virtual
+python3 -m venv venv
+source venv/bin/activate
 
-# 3. Generar los archivos Python desde los archivos .proto
-python3 -m grpc_tools.protoc \
+# 3. Instalar las dependencias de Python
+pip install grpcio grpcio-tools
+
+# 4. Generar los archivos Python desde los archivos .proto
+python -m grpc_tools.protoc \
   -I../priv/protos \
   --python_out=. \
   --grpc_python_out=. \
   --pyi_out=. \
   ../priv/protos/worker_service.proto
-
-# Nota: También necesitas copiar los archivos proto de Google
-python3 -m grpc_tools.protoc \
-  -I/usr/local/lib/python3.*/dist-packages/grpc_tools/_proto \
-  -I../priv/protos \
-  --python_out=. \
-  --grpc_python_out=. \
-  google/protobuf/empty.proto \
-  google/protobuf/timestamp.proto \
-  google/protobuf/struct.proto
 ```
 
 ## Ejecución
 
 ```bash
+# Asegúrate que el venv está activado
+source venv/bin/activate
+
 # Hacer el script ejecutable
 chmod +x test_client.py
 
 # Ejecutar el test
-python3 test_client.py
+python test_client.py
+```
+
+Para salir del entorno virtual cuando termines:
+```bash
+deactivate
 ```
 
 ## Lo que hace el script
@@ -125,8 +127,11 @@ sudo ss -tlnp | grep 9090
 No generaste los archivos Python desde los .proto:
 
 ```bash
+# Activar venv primero
+source venv/bin/activate
+
 # Generar los archivos
-python3 -m grpc_tools.protoc \
+python -m grpc_tools.protoc \
   -I../priv/protos \
   --python_out=. \
   --grpc_python_out=. \
@@ -136,10 +141,14 @@ python3 -m grpc_tools.protoc \
 
 ### Error: "No module named 'grpc'"
 
-Instalar las dependencias:
+Instalar las dependencias dentro del venv:
 
 ```bash
-pip3 install grpcio grpcio-tools
+# Activar venv primero
+source venv/bin/activate
+
+# Instalar dependencias
+pip install grpcio grpcio-tools
 ```
 
 ## Uso desde otros lenguajes
