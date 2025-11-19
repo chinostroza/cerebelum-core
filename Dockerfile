@@ -48,11 +48,10 @@ RUN mix release
 # ================================
 # Runtime Stage
 # ================================
-FROM alpine:3.18 AS runtime
+FROM elixir:1.18-alpine AS runtime
 
-# Install runtime dependencies
+# Install runtime dependencies (most already included in elixir image)
 RUN apk add --no-cache \
-    libstdc++ \
     openssl \
     ncurses-libs
 
