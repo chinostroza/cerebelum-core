@@ -29,16 +29,9 @@ services:
       dockerfile: Dockerfile
     container_name: cerebelum_app
     restart: unless-stopped
-    # Remove depends_on if using external PostgreSQL
-    # depends_on:
-    #   db:
-    #     condition: service_healthy
     environment:
-      # Database Configuration
-      # For external PostgreSQL on same host: use host.docker.internal
-      # For external PostgreSQL on different host: use the hostname/IP
-      # For Docker PostgreSQL service: use 'db'
-      DATABASE_URL: "ecto://${DATABASE_USER:-cerebelum}:${DATABASE_PASSWORD:-cerebelum_secret}@${DATABASE_HOST:-host.docker.internal}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-cerebelum_prod}"
+      # Database Configuration - using host network mode, can use localhost
+      DATABASE_URL: "ecto://${DATABASE_USER:-cerebelum}:${DATABASE_PASSWORD:-cerebelum_secret}@localhost:${DATABASE_PORT:-5432}/${DATABASE_NAME:-cerebelum_prod}"
 
       # Application Configuration
       SECRET_KEY_BASE: ${SECRET_KEY_BASE}
@@ -55,15 +48,10 @@ services:
 
       # Pool Configuration
       POOL_SIZE: ${POOL_SIZE:-10}
-    ports:
-      # Bind to localhost only - services on same server can access via localhost:PORT
-      - "127.0.0.1:${PORT:-4001}:4001"      # HTTP API (localhost only)
-      - "127.0.0.1:${GRPC_PORT:-9090}:9090" # gRPC Server (localhost only)
+    network_mode: "host"
     volumes:
       # Optional: Mount volume for persistent data if needed
       - app_data:/home/app/data
-    networks:
-      - cerebelum_network
     healthcheck:
       test: ["CMD", "bin/cerebelum_core", "rpc", "1 + 1"]
       interval: 30s
@@ -72,11 +60,5 @@ services:
       start_period: 40s
 
 volumes:
-  postgres_data:
-    driver: local
   app_data:
     driver: local
-
-networks:
-  cerebelum_network:
-    driver: bridge
