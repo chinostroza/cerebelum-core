@@ -1,0 +1,38 @@
+[
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/color-v23/abc_tint_spinner.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/color-v23/abc_tint_spinner.xml"
+    },
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/color-v23/abc_btn_colored_text_material.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/color-v23/abc_btn_colored_text_material.xml"
+    },
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/color-v23/abc_color_highlight_material.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/color-v23/abc_color_highlight_material.xml"
+    },
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/color-v23/abc_btn_colored_borderless_text_material.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/color-v23/abc_btn_colored_borderless_text_material.xml"
+    },
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/color-v23/abc_tint_default.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/color-v23/abc_tint_default.xml"
+    },
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/color-v23/abc_tint_edittext.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/color-v23/abc_tint_edittext.xml"
+    },
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/color-v23/abc_tint_seek_thumb.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/color-v23/abc_tint_seek_thumb.xml"
+    },
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/color-v23/abc_tint_btn_checkable.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/color-v23/abc_tint_btn_checkable.xml"
+    },
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/color-v23/abc_tint_switch_track.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/color-v23/abc_tint_switch_track.xml"
+    }
+]

@@ -1,0 +1,4 @@
+# Cerebelum Python SDK Dependencies
+grpcio>=1.76.0
+grpcio-tools>=1.76.0
+protobuf>=3.20.0

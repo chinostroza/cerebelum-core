@@ -1,0 +1,10 @@
+[
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/drawable-ldpi-v4/fingerprint_dialog_error.png",
+        "source": "com.cerebelum.mobile.shared-biometric-1.2.0-alpha05-0:/drawable-ldpi-v4/fingerprint_dialog_error.png"
+    },
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/drawable-ldpi-v4/fingerprint_dialog_fp_icon.png",
+        "source": "com.cerebelum.mobile.shared-biometric-1.2.0-alpha05-0:/drawable-ldpi-v4/fingerprint_dialog_fp_icon.png"
+    }
+]

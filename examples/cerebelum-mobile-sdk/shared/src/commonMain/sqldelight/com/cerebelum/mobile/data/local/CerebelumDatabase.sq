@@ -1,0 +1,42 @@
+import kotlin.Boolean;
+
+CREATE TABLE TaskEntity (
+    id TEXT NOT NULL PRIMARY KEY,
+    type TEXT NOT NULL,
+    payload TEXT NOT NULL, -- JSON string
+    status TEXT NOT NULL,
+    sync_status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    result TEXT
+);
+
+CREATE TABLE SyncAttemptEntity (
+    id TEXT NOT NULL PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    attempt_time INTEGER NOT NULL,
+    error_message TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(task_id) REFERENCES TaskEntity(id)
+);
+
+-- Queries
+
+selectAllTasks:
+SELECT * FROM TaskEntity;
+
+selectPendingSyncTasks:
+SELECT * FROM TaskEntity WHERE sync_status = 'NOT_SYNCED' OR sync_status = 'FAILED';
+
+insertTask:
+INSERT OR REPLACE INTO TaskEntity(id, type, payload, status, sync_status, created_at)
+VALUES (?, ?, ?, ?, ?, ?);
+
+updateTaskStatus:
+UPDATE TaskEntity SET status = ?, completed_at = ?, result = ?, sync_status = 'NOT_SYNCED' WHERE id = ?;
+
+updateSyncStatus:
+UPDATE TaskEntity SET sync_status = ? WHERE id = ?;
+
+selectTaskById:
+SELECT * FROM TaskEntity WHERE id = ?;

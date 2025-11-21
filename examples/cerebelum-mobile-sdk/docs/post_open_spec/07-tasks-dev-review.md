@@ -1,0 +1,43 @@
+# Implementation Plan - Refactoring & QA
+
+- [ ] 1. Refactor to Clean Architecture
+  - [ ] 1.1 Create Domain Layer
+    - Move `Task`, `TaskStatus`, `SyncStatus` to `com.cerebelum.mobile.domain.model`
+    - Create `TaskRepository` interface in `com.cerebelum.mobile.domain.repository`
+    - Create `ProcessNotificationUseCase` in `com.cerebelum.mobile.domain.usecase`
+    - Create `SyncTasksUseCase` in `com.cerebelum.mobile.domain.usecase`
+    - _Requirements: 1.1, 2.1_
+  - [ ] 1.2 Create Data Layer
+    - Move `CerebelumDatabase.sq` and DriverFactory to `com.cerebelum.mobile.data.local`
+    - Implement `SqlDelightTaskRepository` in `com.cerebelum.mobile.data.repository`
+    - Create `KtorSyncService` in `com.cerebelum.mobile.data.remote`
+    - Implement Mappers (`TaskEntityMapper`)
+    - _Requirements: 1.1, 2.5_
+  - [ ] 1.3 Update Presentation Layer
+    - Update `Cerebelum` object to use `DependencyContainer`
+    - Inject Use Cases instead of Repository directly
+    - _Requirements: 1.1, 2.5_
+
+- [ ] 2. Integrate Static Analysis
+  - [ ] 2.1 Configure Detekt
+    - Add Detekt plugin to `libs.versions.toml` and `build.gradle.kts`
+    - Generate default `detekt.yml`
+    - Customize rules (Naming, Complexity, Coroutines)
+    - _Requirements: 3.1, 3.2_
+  - [ ] 2.2 Fix Issues
+    - Run `detekt` and fix reported code smells
+    - _Requirements: 3.3_
+
+- [ ] 3. Implement Unit Tests
+  - [ ] 3.1 Domain Tests
+    - Test `ProcessNotificationUseCase` (mock repo)
+    - Test `SyncTasksUseCase` (mock repo & service)
+    - _Requirements: 4.1_
+  - [ ] 3.2 Data Tests
+    - Test `SqlDelightTaskRepository` using in-memory driver
+    - Test Mappers
+    - _Requirements: 4.1_
+  - [ ] 3.3 Coverage Verification
+    - Configure Kover or Jacoco
+    - Verify >80% coverage
+    - _Requirements: 4.2_

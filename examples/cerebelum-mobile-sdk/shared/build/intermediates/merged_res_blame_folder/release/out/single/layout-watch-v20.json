@@ -1,0 +1,10 @@
+[
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/layout-watch-v20/abc_alert_dialog_button_bar_material.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/layout-watch-v20/abc_alert_dialog_button_bar_material.xml"
+    },
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/layout-watch-v20/abc_alert_dialog_title_material.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/layout-watch-v20/abc_alert_dialog_title_material.xml"
+    }
+]

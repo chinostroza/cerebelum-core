@@ -1,0 +1,4 @@
+/Users/dev/Documents/zea/cerebelum-io/cerebelum-core/examples/cerebelum-mobile-sdk/shared/src/commonTest/kotlin/com/cerebelum/mobile/domain/usecase/SyncTasksUseCaseTest.kt
+/Users/dev/Documents/zea/cerebelum-io/cerebelum-core/examples/cerebelum-mobile-sdk/shared/src/commonTest/kotlin/com/cerebelum/mobile/test/fakes/FakeTaskRepository.kt
+/Users/dev/Documents/zea/cerebelum-io/cerebelum-core/examples/cerebelum-mobile-sdk/shared/src/commonTest/kotlin/com/cerebelum/mobile/domain/usecase/ProcessNotificationUseCaseTest.kt
+/Users/dev/Documents/zea/cerebelum-io/cerebelum-core/examples/cerebelum-mobile-sdk/shared/src/commonTest/kotlin/com/cerebelum/mobile/test/fakes/FakeSyncService.kt

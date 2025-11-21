@@ -1,0 +1,6 @@
+[
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/layout-v26/abc_screen_toolbar.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/layout-v26/abc_screen_toolbar.xml"
+    }
+]

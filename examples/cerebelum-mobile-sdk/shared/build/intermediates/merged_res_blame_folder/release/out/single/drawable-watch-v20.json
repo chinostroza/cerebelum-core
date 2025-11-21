@@ -1,0 +1,6 @@
+[
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/drawable-watch-v20/abc_dialog_material_background.xml",
+        "source": "com.cerebelum.mobile.shared-appcompat-1.2.0-6:/drawable-watch-v20/abc_dialog_material_background.xml"
+    }
+]

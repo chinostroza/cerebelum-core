@@ -1,0 +1,6 @@
+[
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/raw/firebase_common_keep.xml",
+        "source": "com.cerebelum.mobile.shared-firebase-common-20.4.2-5:/raw/firebase_common_keep.xml"
+    }
+]

@@ -1,0 +1,9 @@
+# Cerebelum Python SDK Dependencies
+
+# Core dependencies
+grpcio>=1.60.0
+protobuf>=4.25.0
+
+# Testing (optional)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0

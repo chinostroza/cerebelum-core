@@ -1,0 +1,36 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.cerebelum.mobile.shared-merged_res-24:/values-watch-v20/values-watch-v20.xml",
+            "map": [
+                {
+                    "source": "/Users/dev/.gradle/caches/transforms-4/808805b5b8174013c5ca1a8bcbcfee08/transformed/appcompat-1.2.0/res/values-watch-v20/values-watch-v20.xml",
+                    "from": {
+                        "startLines": "2,5,8",
+                        "startColumns": "4,4,4",
+                        "startOffsets": "55,214,385",
+                        "endLines": "4,7,10",
+                        "endColumns": "12,12,12",
+                        "endOffsets": "209,380,553"
+                    }
+                }
+            ]
+        },
+        {
+            "outputFile": "com.cerebelum.mobile.shared-mergeReleaseResources-22:/values-watch-v20/values-watch-v20.xml",
+            "map": [
+                {
+                    "source": "/Users/dev/.gradle/caches/transforms-4/808805b5b8174013c5ca1a8bcbcfee08/transformed/appcompat-1.2.0/res/values-watch-v20/values-watch-v20.xml",
+                    "from": {
+                        "startLines": "2,5,8",
+                        "startColumns": "4,4,4",
+                        "startOffsets": "55,214,385",
+                        "endLines": "4,7,10",
+                        "endColumns": "12,12,12",
+                        "endOffsets": "209,380,553"
+                    }
+                }
+            ]
+        }
+    ]
+}

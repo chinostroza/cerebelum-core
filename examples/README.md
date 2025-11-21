@@ -1,172 +1,64 @@
-# Cerebelum Core - Test Client
+# Cerebelum Examples
 
-Script de prueba simple en Python para verificar que el servidor gRPC está funcionando correctamente.
+Esta carpeta contiene ejemplos de uso de Cerebelum en diferentes lenguajes.
 
-## Requisitos
+## 📁 Estructura
 
-- Python 3.7+
-- pip
+```
+examples/
+├── python-sdk/          ⭐ Python DSL v1.2 (RECOMENDADO)
+└── cerebelum-native-elixir/  Ejemplos en Elixir
+```
 
-## Instalación
+---
 
-### En tu servidor de producción:
+## 🐍 Python SDK (Recomendado)
+
+**Ubicación:** [`python-sdk/`](./python-sdk/)
+
+El Python SDK incluye el nuevo **DSL v1.2** con todas las mejoras:
+
+✅ Auto-wrapping (sin boilerplate manual)
+✅ Excepciones nativas
+✅ Sintaxis paralela explícita `[step_a, step_b]`
+✅ Validación temprana de dependencias
+
+### Quick Start
 
 ```bash
-# 1. Ir al directorio del proyecto
-cd ~/cerebelum-core/examples
-
-# 2. Crear y activar entorno virtual
-python3 -m venv venv
-source venv/bin/activate
-
-# 3. Instalar las dependencias de Python
-pip install grpcio grpcio-tools
-
-# 4. Generar los archivos Python desde los archivos .proto
-python -m grpc_tools.protoc \
-  -I../priv/protos \
-  --python_out=. \
-  --grpc_python_out=. \
-  --pyi_out=. \
-  ../priv/protos/worker_service.proto
+cd python-sdk
+python3 example_quickstart.py
 ```
 
-## Ejecución
+### Ejemplos Disponibles
 
-```bash
-# Asegúrate que el venv está activado
-source venv/bin/activate
+1. **example_quickstart.py** - Tu primer workflow (< 1 min)
+2. **example_complete_dsl.py** - E-commerce completo con paralelismo
+3. **example_improved_dx.py** - Ver mejoras del DSL
+4. **example_parallel_syntax.py** - Patrones de paralelismo avanzados
 
-# Hacer el script ejecutable
-chmod +x test_client.py
+📖 **Documentación completa:** [python-sdk/README.md](./python-sdk/README.md)
 
-# Ejecutar el test
-python test_client.py
-```
+---
 
-Para salir del entorno virtual cuando termines:
-```bash
-deactivate
-```
+## 🧪 Elixir Examples
 
-## Lo que hace el script
+**Ubicación:** [`cerebelum-native-elixir/`](./cerebelum-native-elixir/)
 
-El script realiza las siguientes pruebas:
+Ejemplos de integración con Cerebelum usando Elixir nativo.
 
-1. **Conexión**: Verifica conectividad con el servidor en localhost:9090
-2. **Registro de Worker**: Registra un worker de prueba llamado "test-worker-python-1"
-3. **Heartbeat**: Envía un heartbeat para verificar que el worker está vivo
-4. **Blueprint**: Envía un workflow simple con 3 pasos (step1 → step2 → step3)
-5. **Ejecución**: Intenta ejecutar el workflow
-6. **Des-registro**: Limpia el worker registrado
+---
 
-## Salida esperada
+## 🚀 Empezar Aquí
 
-```
-============================================================
-Cerebelum Core gRPC Test Client
-============================================================
+**Primera vez con Cerebelum?**
 
-Connecting to: localhost:9090
-✓ Connected successfully!
+1. Ve a [`python-sdk/`](./python-sdk/)
+2. Lee el [README.md](./python-sdk/README.md)
+3. Ejecuta `python3 example_quickstart.py`
+4. ¡Listo! 🎉
 
-1. Testing Worker Registration...
-   ✓ Registration successful!
-   Message: Worker registered successfully
-   Heartbeat interval: 10000ms
+---
 
-2. Testing Heartbeat...
-   ✓ Heartbeat acknowledged: True
-
-3. Testing Blueprint Submission...
-   ✓ Blueprint submitted!
-   Valid: True
-   Workflow hash: abc123...
-
-4. Testing Workflow Execution...
-   ✓ Workflow execution started!
-   Execution ID: exec_xyz789
-   Status: running
-
-5. Testing Worker Unregistration...
-   ✓ Worker unregistered successfully!
-
-============================================================
-Test Summary
-============================================================
-✓ PASS - Worker Registration
-✓ PASS - Heartbeat
-✓ PASS - Blueprint Submission
-✓ PASS - Workflow Execution
-✓ PASS - Worker Unregistration
-
-Total: 5/5 tests passed
-
-🎉 All tests passed!
-```
-
-## Troubleshooting
-
-### Error: "Connection refused"
-
-El servidor no está corriendo o no está escuchando en el puerto 9090:
-
-```bash
-# Verificar que el contenedor está corriendo
-docker compose ps
-
-# Ver logs del servidor
-docker compose logs app
-
-# Verificar que el puerto está abierto
-sudo ss -tlnp | grep 9090
-```
-
-### Error: "Module not found: worker_service_pb2"
-
-No generaste los archivos Python desde los .proto:
-
-```bash
-# Activar venv primero
-source venv/bin/activate
-
-# Generar los archivos
-python -m grpc_tools.protoc \
-  -I../priv/protos \
-  --python_out=. \
-  --grpc_python_out=. \
-  --pyi_out=. \
-  ../priv/protos/worker_service.proto
-```
-
-### Error: "No module named 'grpc'"
-
-Instalar las dependencias dentro del venv:
-
-```bash
-# Activar venv primero
-source venv/bin/activate
-
-# Instalar dependencias
-pip install grpcio grpcio-tools
-```
-
-## Uso desde otros lenguajes
-
-Este mismo .proto puede ser usado para generar clientes en otros lenguajes:
-
-### Kotlin/Java
-```bash
-protoc --java_out=. --grpc-java_out=. worker_service.proto
-```
-
-### TypeScript/Node.js
-```bash
-npm install @grpc/grpc-js @grpc/proto-loader
-protoc --js_out=import_style=commonjs:. --grpc_out=. worker_service.proto
-```
-
-### Go
-```bash
-protoc --go_out=. --go-grpc_out=. worker_service.proto
-```
+**Última actualización:** 2025-11-20
+**Versión SDK:** v1.2.0

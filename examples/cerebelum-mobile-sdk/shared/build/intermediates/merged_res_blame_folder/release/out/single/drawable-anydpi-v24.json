@@ -1,0 +1,6 @@
+[
+    {
+        "merged": "com.cerebelum.mobile.shared-merged_res-24:/drawable-anydpi-v24/fingerprint_dialog_error.xml",
+        "source": "com.cerebelum.mobile.shared-biometric-1.2.0-alpha05-0:/drawable-anydpi-v24/fingerprint_dialog_error.xml"
+    }
+]
