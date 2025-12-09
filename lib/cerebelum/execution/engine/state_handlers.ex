@@ -115,6 +115,11 @@ defmodule Cerebelum.Execution.Engine.StateHandlers do
     {:keep_state, data, [{:reply, from, Data.build_status(data, :completed)}]}
   end
 
+  # Ignore unexpected messages in completed state (e.g., delayed task completions)
+  def completed(:info, _msg, data) do
+    {:keep_state, data}
+  end
+
   @doc """
   Handler for :failed state.
 

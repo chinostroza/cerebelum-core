@@ -145,40 +145,6 @@ branch after: process_payment(), on: result do
 end
 ```
 
-### Clean Architecture
-Maintainable and testable:
-- No framework coupling
-- Dependency inversion via behaviours
-- Each layer independently testable
-- SOLID principles
-
-## 📋 Requirements
-
-See [specs/01-requirements.md](./specs/01-requirements.md) for complete requirements.
-
-**Core Requirements Covered:**
-- Req 1: Workflow Definition and Management
-- Req 2: Deterministic Time Management
-- Req 3: Deterministic Random Operations
-- Req 4: External Call Memoization
-- Req 5: Workflow Versioning and Evolution
-- Req 6: Event Sourcing and Execution History
-- Req 7: Time Travel Debugging
-- Req 8: Clean Architecture Compliance
-- Req 9: SOLID Principles Implementation
-- Req 10: Comprehensive Testing Strategy
-- Req 11: Workflow Execution Engine
-- Req 14: Workflow State Checkpointing
-- Req 16: Database Persistence
-- Req 18: Error Handling and Recovery
-- Req 34: Graph-Based State Management
-
-## 📚 Documentation
-
-- [Requirements](./specs/01-requirements.md) - What we're building
-- [Design](./specs/02-design.md) - How it's architected
-- [Implementation Tasks](./specs/03-implementation-tasks.md) - Development roadmap
-
 ## 🧪 Testing
 
 ```bash
@@ -315,18 +281,3 @@ config :cerebelum_core,
   enable_grpc_server: true,  # Enable for SDK testing
   grpc_port: 50051
 ```
-
-### Common Issues
-
-**Port 50051 in use?**
-- gRPC server is disabled by default now
-- Or set `enable_grpc_server: false` in your config
-
-**Database configuration missing?**
-- See `docs/configuration.md` for complete guide
-- Or `TEAM_SETUP_GUIDE.md` for quick setup
-
-For detailed configuration, see:
-- `docs/configuration.md` - Complete configuration guide
-- `TEAM_SETUP_GUIDE.md` - Quick setup for teams
-

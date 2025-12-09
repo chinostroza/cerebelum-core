@@ -34,7 +34,8 @@ defmodule Cerebelum.Application do
 
     # Conditionally add gRPC server if enabled
     children = if grpc_enabled?() do
-      IO.puts("🔧 Starting gRPC server on port #{grpc_port()}...")
+      # Silenced for clean CLI output
+      # IO.puts("🔧 Starting gRPC server on port #{grpc_port()}...")
       base_children ++ [
         # gRPC server for multi-language SDK support
         # Register servers directly instead of using Endpoint
@@ -44,7 +45,8 @@ defmodule Cerebelum.Application do
          start_server: true}
       ]
     else
-      IO.puts("⚠️  gRPC server disabled")
+      # Silenced for clean CLI output
+      # IO.puts("⚠️  gRPC server disabled")
       base_children
     end
 
