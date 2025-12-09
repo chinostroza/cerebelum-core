@@ -606,6 +606,7 @@ git push origin feature/my-feature
 - **Documentation:** [guides/](./guides/), [specs/](./specs/)
 - **Issues:** [GitHub Issues](https://github.com/cerebelum-io/cerebelum-core/issues)
 - **Discussions:** [GitHub Discussions](https://github.com/cerebelum-io/cerebelum-core/discussions)
+- **Author:** Carlos Hinostroza Droguett - [c@zea.cl](mailto:c@zea.cl)
 
 ### Troubleshooting
 
@@ -638,6 +639,8 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for more troubleshooting.
 MIT License - see [LICENSE](./LICENSE) for details.
 
 Copyright (c) 2024 Cerebelum.io
+
+**Author:** Carlos Hinostroza Droguett ([c@zea.cl](mailto:c@zea.cl))
 
 ---
 
