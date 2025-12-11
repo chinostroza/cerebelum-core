@@ -91,6 +91,21 @@ message TaskResult {
   google.protobuf.Struct result = 5;  // JSON result from step execution
   ErrorInfo error = 6;  // Present if status is FAILED
   google.protobuf.Timestamp completed_at = 7;
+  SleepRequest sleep_request = 8;  // Present if status is SLEEP
+  ApprovalRequest approval_request = 9;  // Present if status is APPROVAL
+}
+
+// Sleep Request - step wants to pause workflow
+message SleepRequest {
+  int64 duration_ms = 1;  // Sleep duration in milliseconds
+  google.protobuf.Struct data = 2;  // Data to carry through sleep
+}
+
+// Approval Request - step wants human approval
+message ApprovalRequest {
+  string approval_type = 1;  // "manual", "automated", etc.
+  google.protobuf.Struct data = 2;  // Approval data
+  int64 timeout_ms = 3;  // Optional timeout
 }
 
 enum TaskStatus {
@@ -99,6 +114,8 @@ enum TaskStatus {
   FAILED = 2;
   TIMEOUT = 3;
   CANCELLED = 4;
+  SLEEP = 5;  // Step requested sleep - workflow will pause
+  APPROVAL = 6;  // Step requested approval - workflow will wait
 }
 
 message ErrorInfo {

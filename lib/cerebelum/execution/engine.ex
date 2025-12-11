@@ -132,6 +132,21 @@ defmodule Cerebelum.Execution.Engine do
   end
 
   @doc """
+  Gets the execution_id from the engine process.
+
+  ## Examples
+
+      {:ok, pid} = Engine.start_link(workflow_module: MyWorkflow, inputs: %{})
+      execution_id = Engine.get_execution_id(pid)
+      #=> "exec_1234..."
+  """
+  @spec get_execution_id(pid()) :: String.t()
+  def get_execution_id(pid) do
+    %{context: context} = get_status(pid)
+    context.execution_id
+  end
+
+  @doc """
   Stops the execution engine.
 
   ## Examples

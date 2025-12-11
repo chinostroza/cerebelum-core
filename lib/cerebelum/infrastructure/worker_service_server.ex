@@ -168,148 +168,99 @@ defmodule Cerebelum.Infrastructure.WorkerServiceServer do
       internal_result
     ) do
       {:ok, metadata} ->
-        # Extract step info from metadata
-        step_name = metadata.step_name
-        workflow_module = metadata.workflow_module
+        # ✅ NEW: Notify WorkflowDelegatingWorkflow instead of ExecutionStateManager
+        # This allows the Engine to handle the result properly
         execution_id = metadata.execution_id
-        retry_count = Map.get(metadata, :retry_count, 0)
+        task_id = result.task_id
 
-        Logger.info("Processing result for step #{step_name} in execution #{execution_id}, status: #{internal_result.status}")
-
-        # Check task status
-        case internal_result.status do
+        # Convert result to format expected by WorkflowDelegatingWorkflow
+        workflow_result = case internal_result.status do
           :success ->
-            # Get step result
-            step_result = internal_result.result
+            # Check if result contains a sleep/approval marker (workaround for protobuf)
+            result_data = internal_result.result
 
-            # Mark step as complete in ExecutionStateManager
-            case Cerebelum.Infrastructure.ExecutionStateManager.complete_step(
-              execution_id,
-              step_name,
-              step_result
-            ) do
-              {:ok, _updated_state} ->
-                # Get next steps based on dependencies, diverge, and branch rules
-                case Cerebelum.Infrastructure.ExecutionStateManager.get_next_steps(execution_id) do
-                  {:ok, [_ | _] = next_steps} ->
-                    # Queue next steps for execution
-                    {:ok, _task_ids} = Cerebelum.Infrastructure.TaskRouter.queue_initial_tasks(
-                      execution_id,
-                      workflow_module,
-                      next_steps,
-                      step_result
-                    )
+            cond do
+              # Check for sleep marker
+              is_map(result_data) && Map.get(result_data, "__cerebelum_sleep_request__") == true ->
+                duration_ms = Map.get(result_data, "duration_ms", 0)
+                data = Map.get(result_data, "data", %{})
+                Logger.info("Detected sleep request: #{duration_ms}ms")
+                {:sleep, duration_ms, data}
 
-                    Logger.info("Queued #{length(next_steps)} next step(s): #{inspect(next_steps)}")
-
-                    %Ack{
-                      success: true,
-                      message: "Result processed, #{length(next_steps)} next step(s) queued"
-                    }
-
-                  {:ok, []} ->
-                    # No more steps - execution complete
-                    Logger.info("No more steps - execution #{execution_id} complete")
-
-                    Cerebelum.Infrastructure.ExecutionStateManager.complete_execution(execution_id)
-
-                    %Ack{
-                      success: true,
-                      message: "Result processed, execution complete"
-                    }
-
-                  {:error, reason} ->
-                    Logger.error("Failed to get next steps: #{inspect(reason)}")
-                    %Ack{
-                      success: false,
-                      message: "Error determining next steps: #{inspect(reason)}"
-                    }
-                end
-
-              {:error, reason} ->
-                Logger.error("Failed to mark step complete: #{inspect(reason)}")
-                %Ack{
-                  success: false,
-                  message: "Error marking step complete: #{inspect(reason)}"
+              # Check for approval marker
+              is_map(result_data) && Map.get(result_data, "__cerebelum_approval_request__") == true ->
+                approval_data = %{
+                  type: Map.get(result_data, "approval_type", "manual"),
+                  data: Map.get(result_data, "data", %{}),
+                  timeout_ms: Map.get(result_data, "timeout_ms")
                 }
+                Logger.info("Detected approval request: #{approval_data.type}")
+                {:approval, approval_data}
+
+              # Normal success
+              true ->
+                {:ok, result_data}
             end
 
-          status when status in [:failed, :timeout, :cancelled] ->
-            # Task failed - check if we should retry
-            max_retries = 3  # Should match TaskRouter.@max_retries
+          :failed ->
+            error = internal_result.error || %{message: "Unknown error"}
+            {:error, error[:message] || "Task failed"}
 
-            if retry_count < max_retries do
-              # Retry the task - re-queue with incremented retry count
-              Logger.warning("Task #{result.task_id} #{status}, retrying (#{retry_count + 1}/#{max_retries})")
+          :timeout ->
+            {:error, :task_timeout}
 
-              retry_task_data = %{
-                workflow_module: workflow_module,
-                step_name: step_name,
-                inputs: Map.get(metadata, :inputs, %{}),
-                context: Map.get(metadata, :context, %{}),
-                retry_count: retry_count + 1
-              }
+          :cancelled ->
+            {:error, :task_cancelled}
 
-              # Calculate exponential backoff
-              backoff_ms = 1000 * :math.pow(2, retry_count) |> round()
-              :timer.sleep(backoff_ms)
-
-              {:ok, _new_task_id} = Cerebelum.Infrastructure.TaskRouter.queue_task(execution_id, retry_task_data)
-
-              %Ack{
-                success: true,
-                message: "Task #{status}, retrying (#{retry_count + 1}/#{max_retries})"
-              }
+          :sleep ->
+            # Extract sleep request from protobuf (when protobuf is regenerated)
+            sleep_req = result.sleep_request
+            if sleep_req do
+              duration_ms = sleep_req.duration_ms || 0
+              data = struct_to_map(sleep_req.data)
+              {:sleep, duration_ms, data}
             else
-              # Max retries exceeded - move to DLQ and fail the execution
-              error_msg = internal_result.error || %{message: "Task #{status}"}
-              failure_reason = "Task #{step_name} #{status} after #{max_retries} retries: #{error_msg[:message] || inspect(error_msg)}"
-
-              Logger.error("Task #{result.task_id} exceeded max retries (#{max_retries}), moving to DLQ")
-
-              # Add task to DLQ
-              error_info = %{
-                kind: to_string(status),
-                message: error_msg[:message] || inspect(error_msg),
-                stacktrace: error_msg[:stacktrace] || ""
-              }
-
-              dlq_task_info = %{
-                task_id: result.task_id,
-                execution_id: execution_id,
-                workflow_module: workflow_module,
-                step_name: step_name,
-                inputs: Map.get(metadata, :inputs, %{}),
-                context: Map.get(metadata, :context, %{}),
-                retry_count: retry_count
-              }
-
-              Cerebelum.Infrastructure.DLQ.add_to_dlq(dlq_task_info, error_info)
-
-              # Fail the execution
-              Cerebelum.Infrastructure.ExecutionStateManager.fail_execution(execution_id, failure_reason <> " - moved to DLQ")
-
-              # Cancel all remaining tasks
-              Cerebelum.Infrastructure.TaskRouter.cancel_tasks(execution_id)
-
-              %Ack{
-                success: false,
-                message: "Execution failed: #{failure_reason} - task moved to DLQ"
-              }
+              {:error, "Sleep status without sleep_request"}
             end
 
-          status ->
-            Logger.warning("Unknown task status: #{status}")
-            %Ack{
-              success: false,
-              message: "Unknown task status: #{status}"
-            }
+          :approval ->
+            # Extract approval request from protobuf (when protobuf is regenerated)
+            approval_req = result.approval_request
+            if approval_req do
+              approval_data = %{
+                type: approval_req.approval_type || "manual",
+                data: struct_to_map(approval_req.data),
+                timeout_ms: approval_req.timeout_ms
+              }
+              {:approval, approval_data}
+            else
+              {:error, "Approval status without approval_request"}
+            end
+
+          _ ->
+            {:error, :unknown_status}
         end
 
-      {:error, reason} ->
+        # Notify the WorkflowDelegatingWorkflow that the task completed
+        Cerebelum.WorkflowDelegatingWorkflow.notify_task_result(
+          execution_id,
+          task_id,
+          workflow_result
+        )
+
+        Logger.info("Notified WorkflowDelegatingWorkflow for execution #{execution_id}, task #{task_id}")
+
+        %Ack{
+          success: true,
+          message: "Task result processed and notified to workflow engine"
+        }
+
+      {:error, :task_not_found} ->
+        Logger.error("Task not found: #{result.task_id}")
+
         %Ack{
           success: false,
-          message: "Error processing result: #{inspect(reason)}"
+          message: "Task not found: #{result.task_id}"
         }
     end
   end
@@ -363,6 +314,13 @@ defmodule Cerebelum.Infrastructure.WorkerServiceServer do
 
   @doc """
   Execute a workflow via gRPC request.
+
+  This now uses the Engine system to get full OTP benefits:
+  - Event sourcing
+  - Resurrection
+  - Sleep/Approval
+  - Hibernation
+  - StateReconstructor
   """
   @spec execute_workflow(ExecuteRequest.t(), GRPC.Server.Stream.t()) ::
           ExecutionHandle.t()
@@ -372,53 +330,51 @@ defmodule Cerebelum.Infrastructure.WorkerServiceServer do
     # Convert inputs from Protobuf Struct to Elixir map
     inputs = struct_to_map(request.inputs)
 
-    # Generate execution ID
-    execution_id = "exec_#{System.unique_integer([:positive])}_#{:rand.uniform(999999)}"
-
-    Logger.info("Created execution: #{execution_id} for workflow #{request.workflow_module}")
     Logger.debug("Execution inputs: #{inspect(inputs)}")
 
     # Lookup blueprint from registry
     case Cerebelum.Infrastructure.BlueprintRegistry.get_blueprint(request.workflow_module) do
       {:ok, blueprint} ->
-        # Create execution state to track progress
-        {:ok, _exec_state} = Cerebelum.Infrastructure.ExecutionStateManager.create_execution(
-          execution_id,
-          blueprint,
-          inputs
+        Logger.info("Blueprint found for #{request.workflow_module}")
+
+        # ✅ NEW: Use Engine instead of ExecutionStateManager
+        # This gives us: events, resurrection, sleep, hibernation, OTP supervision
+        {:ok, pid} = Cerebelum.Execution.Supervisor.start_execution(
+          Cerebelum.WorkflowDelegatingWorkflow,
+          inputs,
+          # Pass blueprint and workflow_module via context
+          blueprint: blueprint,
+          workflow_module: request.workflow_module,
+          execution_mode: :distributed
         )
 
-        Logger.info("Execution state created for #{execution_id}")
+        # Get execution_id from the Engine process
+        execution_id = Cerebelum.Execution.Engine.get_execution_id(pid)
 
-        # Get initial steps (those with no dependencies)
-        {:ok, initial_steps} = Cerebelum.Infrastructure.ExecutionStateManager.get_next_steps(execution_id)
+        Logger.info("Execution started: #{execution_id} (Engine PID: #{inspect(pid)})")
 
-        if length(initial_steps) > 0 do
-          # Queue initial tasks for workers to execute
-          {:ok, _task_ids} = Cerebelum.Infrastructure.TaskRouter.queue_initial_tasks(
-            execution_id,
-            request.workflow_module,
-            initial_steps,
-            inputs
-          )
-
-          Logger.info("Queued #{length(initial_steps)} initial task(s) for execution #{execution_id}: #{inspect(initial_steps)}")
-        else
-          Logger.warning("No initial steps ready for #{request.workflow_module}")
-        end
+        %ExecutionHandle{
+          execution_id: execution_id,
+          status: "running",
+          started_at: %Google.Protobuf.Timestamp{
+            seconds: System.os_time(:second),
+            nanos: 0
+          }
+        }
 
       {:error, :not_found} ->
         Logger.error("Blueprint not found for workflow #{request.workflow_module}. Did you call SubmitBlueprint first?")
-    end
 
-    %ExecutionHandle{
-      execution_id: execution_id,
-      status: "running",
-      started_at: %Google.Protobuf.Timestamp{
-        seconds: System.os_time(:second),
-        nanos: 0
-      }
-    }
+        # Return error handle
+        %ExecutionHandle{
+          execution_id: "error_#{System.unique_integer([:positive])}",
+          status: "failed",
+          started_at: %Google.Protobuf.Timestamp{
+            seconds: System.os_time(:second),
+            nanos: 0
+          }
+        }
+    end
   end
 
   # Helper Functions
@@ -541,6 +497,8 @@ defmodule Cerebelum.Infrastructure.WorkerServiceServer do
   defp convert_task_status(:FAILED), do: :failed
   defp convert_task_status(:TIMEOUT), do: :timeout
   defp convert_task_status(:CANCELLED), do: :cancelled
+  defp convert_task_status(:SLEEP), do: :sleep
+  defp convert_task_status(:APPROVAL), do: :approval
   defp convert_task_status(_), do: :unknown
 
   defp convert_error_info(nil), do: nil
