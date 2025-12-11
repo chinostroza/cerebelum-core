@@ -25,7 +25,17 @@ defmodule Cerebelum.Infrastructure.WorkerServiceServer do
     Blueprint,
     BlueprintValidation,
     ExecuteRequest,
-    ExecutionHandle
+    ExecutionHandle,
+    GetExecutionStatusRequest,
+    ExecutionStatus,
+    StepStatus,
+    SleepInfo,
+    ApprovalInfo,
+    ExecutionState,
+    ListExecutionsRequest,
+    ListExecutionsResponse,
+    ResumeExecutionRequest,
+    ErrorInfo
   }
 
   require Logger
@@ -377,6 +387,180 @@ defmodule Cerebelum.Infrastructure.WorkerServiceServer do
     end
   end
 
+  # Execution Status and Control (NEW)
+
+  @doc """
+  Get the status of a workflow execution.
+
+  Reconstructs the execution state from events and returns detailed information
+  including progress, completed steps, outputs, and current state.
+  """
+  @spec get_execution_status(Cerebelum.Worker.GetExecutionStatusRequest.t(), GRPC.Server.Stream.t()) ::
+          Cerebelum.Worker.ExecutionStatus.t()
+  def get_execution_status(request, _stream) do
+    execution_id = request.execution_id
+    Logger.info("Getting execution status for: #{execution_id}")
+
+    # Reconstruct state from events
+    case Cerebelum.Execution.StateReconstructor.reconstruct_to_engine_data(execution_id) do
+      {:ok, engine_data} ->
+        # Build ExecutionStatus from engine_data
+        build_execution_status(execution_id, engine_data)
+
+      {:error, :not_found} ->
+        Logger.error("Execution not found: #{execution_id}")
+
+        # Return empty status with error
+        %Cerebelum.Worker.ExecutionStatus{
+          execution_id: execution_id,
+          workflow_name: "unknown",
+          status: :EXECUTION_STATE_UNSPECIFIED,
+          current_step_index: 0,
+          total_steps: 0,
+          completed_steps: [],
+          inputs: nil,
+          step_outputs: %{},
+          error: %Cerebelum.Worker.ErrorInfo{
+            kind: "not_found",
+            message: "Execution #{execution_id} not found",
+            stacktrace: ""
+          }
+        }
+
+      {:error, reason} ->
+        Logger.error("Failed to reconstruct state for #{execution_id}: #{inspect(reason)}")
+
+        %Cerebelum.Worker.ExecutionStatus{
+          execution_id: execution_id,
+          workflow_name: "unknown",
+          status: :EXECUTION_FAILED,
+          current_step_index: 0,
+          total_steps: 0,
+          completed_steps: [],
+          inputs: nil,
+          step_outputs: %{},
+          error: %Cerebelum.Worker.ErrorInfo{
+            kind: "reconstruction_error",
+            message: "Failed to reconstruct execution state: #{inspect(reason)}",
+            stacktrace: ""
+          }
+        }
+    end
+  end
+
+  @doc """
+  List workflow executions with optional filtering.
+
+  Returns a list of executions, optionally filtered by workflow name and status.
+  Supports pagination via limit and offset.
+  """
+  @spec list_executions(Cerebelum.Worker.ListExecutionsRequest.t(), GRPC.Server.Stream.t()) ::
+          Cerebelum.Worker.ListExecutionsResponse.t()
+  def list_executions(request, _stream) do
+    Logger.info("Listing executions - filters: workflow=#{inspect(request.workflow_name)}, status=#{inspect(request.status)}")
+
+    limit = if request.limit > 0, do: min(request.limit, 100), else: 50
+    offset = max(request.offset, 0)
+
+    # Query EventStore for execution IDs
+    # For now, we'll query all ExecutionStartedEvent events
+    # TODO: Add proper filtering and pagination in EventStore
+
+    case Cerebelum.EventStore.list_executions(
+      workflow_name: request.workflow_name,
+      status: execution_state_to_atom(request.status),
+      limit: limit,
+      offset: offset
+    ) do
+      {:ok, execution_ids, total_count} ->
+        # Build ExecutionStatus for each execution
+        executions = Enum.map(execution_ids, fn exec_id ->
+          case Cerebelum.Execution.StateReconstructor.reconstruct_to_engine_data(exec_id) do
+            {:ok, engine_data} ->
+              build_execution_status(exec_id, engine_data)
+            {:error, _reason} ->
+              # Return minimal status on error
+              %Cerebelum.Worker.ExecutionStatus{
+                execution_id: exec_id,
+                workflow_name: "unknown",
+                status: :EXECUTION_STATE_UNSPECIFIED,
+                current_step_index: 0,
+                total_steps: 0
+              }
+          end
+        end)
+
+        has_more = (offset + length(executions)) < total_count
+
+        %Cerebelum.Worker.ListExecutionsResponse{
+          executions: executions,
+          total_count: total_count,
+          has_more: has_more
+        }
+
+      {:error, reason} ->
+        Logger.error("Failed to list executions: #{inspect(reason)}")
+
+        %Cerebelum.Worker.ListExecutionsResponse{
+          executions: [],
+          total_count: 0,
+          has_more: false
+        }
+    end
+  end
+
+  @doc """
+  Resume a paused or failed workflow execution.
+
+  Reconstructs the state from events and resumes execution from where it left off.
+  Completed steps are skipped by default.
+  """
+  @spec resume_execution(Cerebelum.Worker.ResumeExecutionRequest.t(), GRPC.Server.Stream.t()) ::
+          Cerebelum.Worker.ExecutionHandle.t()
+  def resume_execution(request, _stream) do
+    execution_id = request.execution_id
+    Logger.info("Resuming execution: #{execution_id}")
+
+    # Resume execution using the Supervisor
+    case Cerebelum.Execution.Supervisor.resume_execution(execution_id) do
+      {:ok, _pid} ->
+        Logger.info("Execution resumed successfully: #{execution_id}")
+
+        %Cerebelum.Worker.ExecutionHandle{
+          execution_id: execution_id,
+          status: "resumed",
+          started_at: %Google.Protobuf.Timestamp{
+            seconds: System.os_time(:second),
+            nanos: 0
+          }
+        }
+
+      {:error, :already_running} ->
+        Logger.warning("Execution already running: #{execution_id}")
+
+        %Cerebelum.Worker.ExecutionHandle{
+          execution_id: execution_id,
+          status: "already_running",
+          started_at: %Google.Protobuf.Timestamp{
+            seconds: System.os_time(:second),
+            nanos: 0
+          }
+        }
+
+      {:error, reason} ->
+        Logger.error("Failed to resume execution #{execution_id}: #{inspect(reason)}")
+
+        %Cerebelum.Worker.ExecutionHandle{
+          execution_id: execution_id,
+          status: "failed_to_resume",
+          started_at: %Google.Protobuf.Timestamp{
+            seconds: System.os_time(:second),
+            nanos: 0
+          }
+        }
+    end
+  end
+
   # Helper Functions
 
   defp convert_workflow_definition(nil), do: %{timeline: [], diverge_rules: [], branch_rules: [], inputs: %{}}
@@ -522,4 +706,191 @@ defmodule Cerebelum.Infrastructure.WorkerServiceServer do
     s * 1000 + div(n, 1_000_000)
   end
   defp timestamp_to_ms(_), do: System.system_time(:millisecond)
+
+  # New helper functions for execution status
+
+  @doc false
+  defp build_execution_status(execution_id, engine_data) do
+    # Determine execution state
+    execution_state = determine_execution_state(engine_data)
+
+    # Get workflow name from context
+    workflow_name = Map.get(engine_data.context, :workflow_module, "unknown")
+
+    # Build completed steps
+    completed_steps = build_completed_steps(engine_data)
+
+    # Get current step info
+    current_step_name = if engine_data.step_index < length(engine_data.timeline) do
+      Enum.at(engine_data.timeline, engine_data.step_index) || ""
+    else
+      ""
+    end
+
+    # Convert inputs and step outputs
+    inputs = convert_to_struct(engine_data.context.inputs)
+    step_outputs = Enum.into(engine_data.results, %{}, fn {step_name, result} ->
+      {to_string(step_name), convert_to_struct(result)}
+    end)
+
+    # Build sleep info if sleeping
+    sleep_info = if engine_data.sleep_duration_ms do
+      build_sleep_info(engine_data)
+    else
+      nil
+    end
+
+    # Build approval info if waiting for approval
+    approval_info = if engine_data.approval_type do
+      build_approval_info(engine_data)
+    else
+      nil
+    end
+
+    # Build error info if failed
+    error_info = if engine_data.error do
+      build_error_info(engine_data.error)
+    else
+      nil
+    end
+
+    # Get timestamps
+    started_at = if engine_data.context.started_at do
+      timestamp_from_ms(engine_data.context.started_at)
+    else
+      nil
+    end
+
+    completed_at = if engine_data.finished_at do
+      timestamp_from_ms(engine_data.finished_at)
+    else
+      nil
+    end
+
+    %ExecutionStatus{
+      execution_id: execution_id,
+      workflow_name: workflow_name,
+      status: execution_state,
+      started_at: started_at,
+      completed_at: completed_at,
+      current_step_index: engine_data.step_index,
+      total_steps: length(engine_data.timeline),
+      current_step_name: current_step_name,
+      completed_steps: completed_steps,
+      inputs: inputs,
+      step_outputs: step_outputs,
+      error: error_info,
+      sleep_info: sleep_info,
+      approval_info: approval_info
+    }
+  end
+
+  defp determine_execution_state(engine_data) do
+    cond do
+      engine_data.error != nil ->
+        :EXECUTION_FAILED
+
+      engine_data.finished? ->
+        :EXECUTION_COMPLETED
+
+      engine_data.sleep_duration_ms != nil ->
+        :EXECUTION_SLEEPING
+
+      engine_data.approval_type != nil ->
+        :EXECUTION_WAITING_FOR_APPROVAL
+
+      true ->
+        :EXECUTION_RUNNING
+    end
+  end
+
+  defp build_completed_steps(engine_data) do
+    # Build list of completed steps from results
+    # We need to track which steps have completed, their timing, and outputs
+    Enum.with_index(engine_data.timeline)
+    |> Enum.filter(fn {step_name, index} ->
+      # Step is completed if index < current step_index OR it's in results
+      index < engine_data.step_index || Map.has_key?(engine_data.results, step_name)
+    end)
+    |> Enum.map(fn {step_name, index} ->
+      result = Map.get(engine_data.results, step_name)
+
+      %StepStatus{
+        step_name: to_string(step_name),
+        step_index: index,
+        status: "completed",
+        started_at: nil,  # We don't track individual step start times in Engine.Data
+        completed_at: nil,  # We don't track individual step completion times
+        duration_seconds: 0,  # Not available in Engine.Data
+        output: if(result, do: convert_to_struct(result), else: nil),
+        error: nil
+      }
+    end)
+  end
+
+  defp build_sleep_info(engine_data) do
+    now_ms = System.system_time(:millisecond)
+    elapsed_ms = if engine_data.sleep_started_at do
+      now_ms - engine_data.sleep_started_at
+    else
+      0
+    end
+    remaining_ms = max(0, engine_data.sleep_duration_ms - elapsed_ms)
+
+    %SleepInfo{
+      duration_ms: engine_data.sleep_duration_ms,
+      sleep_started_at: if(engine_data.sleep_started_at, do: timestamp_from_ms(engine_data.sleep_started_at), else: nil),
+      remaining_ms: remaining_ms,
+      data: if(engine_data.sleep_data, do: convert_to_struct(engine_data.sleep_data), else: nil)
+    }
+  end
+
+  defp build_approval_info(engine_data) do
+    now_ms = System.system_time(:millisecond)
+    elapsed_ms = if engine_data.approval_started_at do
+      now_ms - engine_data.approval_started_at
+    else
+      0
+    end
+
+    remaining_timeout_ms = if engine_data.approval_timeout_ms do
+      max(0, engine_data.approval_timeout_ms - elapsed_ms)
+    else
+      0
+    end
+
+    %ApprovalInfo{
+      approval_type: to_string(engine_data.approval_type || "manual"),
+      data: if(engine_data.approval_data, do: convert_to_struct(engine_data.approval_data), else: nil),
+      timeout_ms: engine_data.approval_timeout_ms || 0,
+      requested_at: if(engine_data.approval_started_at, do: timestamp_from_ms(engine_data.approval_started_at), else: nil),
+      remaining_timeout_ms: remaining_timeout_ms
+    }
+  end
+
+  defp build_error_info(error) when is_map(error) do
+    %ErrorInfo{
+      kind: to_string(Map.get(error, :kind, "unknown")),
+      message: to_string(Map.get(error, :message, "Unknown error")),
+      stacktrace: to_string(Map.get(error, :stacktrace, ""))
+    }
+  end
+  defp build_error_info(error) when is_binary(error) do
+    %ErrorInfo{
+      kind: "error",
+      message: error,
+      stacktrace: ""
+    }
+  end
+  defp build_error_info(_), do: nil
+
+  defp execution_state_to_atom(:EXECUTION_STATE_UNSPECIFIED), do: nil
+  defp execution_state_to_atom(:EXECUTION_RUNNING), do: :running
+  defp execution_state_to_atom(:EXECUTION_COMPLETED), do: :completed
+  defp execution_state_to_atom(:EXECUTION_FAILED), do: :failed
+  defp execution_state_to_atom(:EXECUTION_SLEEPING), do: :sleeping
+  defp execution_state_to_atom(:EXECUTION_WAITING_FOR_APPROVAL), do: :waiting_for_approval
+  defp execution_state_to_atom(:EXECUTION_PAUSED), do: :paused
+  defp execution_state_to_atom(nil), do: nil
+  defp execution_state_to_atom(_), do: nil
 end

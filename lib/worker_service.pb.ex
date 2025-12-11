@@ -19,6 +19,22 @@ defmodule Cerebelum.Worker.TaskStatus do
   field :FAILED, 2
   field :TIMEOUT, 3
   field :CANCELLED, 4
+  field :SLEEP, 5
+  field :APPROVAL, 6
+end
+
+defmodule Cerebelum.Worker.ExecutionState do
+  @moduledoc false
+
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :EXECUTION_STATE_UNSPECIFIED, 0
+  field :EXECUTION_RUNNING, 1
+  field :EXECUTION_COMPLETED, 2
+  field :EXECUTION_FAILED, 3
+  field :EXECUTION_SLEEPING, 4
+  field :EXECUTION_WAITING_FOR_APPROVAL, 5
+  field :EXECUTION_PAUSED, 6
 end
 
 defmodule Cerebelum.Worker.RegisterRequest.MetadataEntry do
@@ -119,6 +135,27 @@ defmodule Cerebelum.Worker.TaskResult do
   field :result, 5, type: Google.Protobuf.Struct
   field :error, 6, type: Cerebelum.Worker.ErrorInfo
   field :completed_at, 7, type: Google.Protobuf.Timestamp, json_name: "completedAt"
+  field :sleep_request, 8, type: Cerebelum.Worker.SleepRequest, json_name: "sleepRequest"
+  field :approval_request, 9, type: Cerebelum.Worker.ApprovalRequest, json_name: "approvalRequest"
+end
+
+defmodule Cerebelum.Worker.SleepRequest do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :duration_ms, 1, type: :int64, json_name: "durationMs"
+  field :data, 2, type: Google.Protobuf.Struct
+end
+
+defmodule Cerebelum.Worker.ApprovalRequest do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :approval_type, 1, type: :string, json_name: "approvalType"
+  field :data, 2, type: Google.Protobuf.Struct
+  field :timeout_ms, 3, type: :int64, json_name: "timeoutMs"
 end
 
 defmodule Cerebelum.Worker.ErrorInfo do
@@ -281,6 +318,123 @@ defmodule Cerebelum.Worker.ExecutionHandle do
   field :started_at, 3, type: Google.Protobuf.Timestamp, json_name: "startedAt"
 end
 
+defmodule Cerebelum.Worker.GetExecutionStatusRequest do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :execution_id, 1, type: :string, json_name: "executionId"
+end
+
+defmodule Cerebelum.Worker.ExecutionStatus.StepOutputsEntry do
+  @moduledoc false
+
+  use Protobuf, map: true, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :key, 1, type: :string
+  field :value, 2, type: Google.Protobuf.Struct
+end
+
+defmodule Cerebelum.Worker.ExecutionStatus do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :execution_id, 1, type: :string, json_name: "executionId"
+  field :workflow_name, 2, type: :string, json_name: "workflowName"
+  field :status, 3, type: Cerebelum.Worker.ExecutionState, enum: true
+  field :started_at, 4, type: Google.Protobuf.Timestamp, json_name: "startedAt"
+  field :completed_at, 5, type: Google.Protobuf.Timestamp, json_name: "completedAt"
+  field :current_step_index, 6, type: :int32, json_name: "currentStepIndex"
+  field :total_steps, 7, type: :int32, json_name: "totalSteps"
+  field :current_step_name, 8, type: :string, json_name: "currentStepName"
+
+  field :completed_steps, 9,
+    repeated: true,
+    type: Cerebelum.Worker.StepStatus,
+    json_name: "completedSteps"
+
+  field :inputs, 10, type: Google.Protobuf.Struct
+
+  field :step_outputs, 11,
+    repeated: true,
+    type: Cerebelum.Worker.ExecutionStatus.StepOutputsEntry,
+    json_name: "stepOutputs",
+    map: true
+
+  field :error, 12, type: Cerebelum.Worker.ErrorInfo
+  field :sleep_info, 13, type: Cerebelum.Worker.SleepInfo, json_name: "sleepInfo"
+  field :approval_info, 14, type: Cerebelum.Worker.ApprovalInfo, json_name: "approvalInfo"
+end
+
+defmodule Cerebelum.Worker.StepStatus do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :step_name, 1, type: :string, json_name: "stepName"
+  field :step_index, 2, type: :int32, json_name: "stepIndex"
+  field :status, 3, type: :string
+  field :started_at, 4, type: Google.Protobuf.Timestamp, json_name: "startedAt"
+  field :completed_at, 5, type: Google.Protobuf.Timestamp, json_name: "completedAt"
+  field :duration_seconds, 6, type: :int32, json_name: "durationSeconds"
+  field :output, 7, type: Google.Protobuf.Struct
+  field :error, 8, type: Cerebelum.Worker.ErrorInfo
+end
+
+defmodule Cerebelum.Worker.SleepInfo do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :duration_ms, 1, type: :int64, json_name: "durationMs"
+  field :sleep_started_at, 2, type: Google.Protobuf.Timestamp, json_name: "sleepStartedAt"
+  field :remaining_ms, 3, type: :int64, json_name: "remainingMs"
+  field :data, 4, type: Google.Protobuf.Struct
+end
+
+defmodule Cerebelum.Worker.ApprovalInfo do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :approval_type, 1, type: :string, json_name: "approvalType"
+  field :data, 2, type: Google.Protobuf.Struct
+  field :timeout_ms, 3, type: :int64, json_name: "timeoutMs"
+  field :requested_at, 4, type: Google.Protobuf.Timestamp, json_name: "requestedAt"
+  field :remaining_timeout_ms, 5, type: :int64, json_name: "remainingTimeoutMs"
+end
+
+defmodule Cerebelum.Worker.ListExecutionsRequest do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :workflow_name, 1, proto3_optional: true, type: :string, json_name: "workflowName"
+  field :status, 2, proto3_optional: true, type: Cerebelum.Worker.ExecutionState, enum: true
+  field :limit, 3, type: :int32
+  field :offset, 4, type: :int32
+end
+
+defmodule Cerebelum.Worker.ListExecutionsResponse do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :executions, 1, repeated: true, type: Cerebelum.Worker.ExecutionStatus
+  field :total_count, 2, type: :int32, json_name: "totalCount"
+  field :has_more, 3, type: :bool, json_name: "hasMore"
+end
+
+defmodule Cerebelum.Worker.ResumeExecutionRequest do
+  @moduledoc false
+
+  use Protobuf, protoc_gen_elixir_version: "0.15.0", syntax: :proto3
+
+  field :execution_id, 1, type: :string, json_name: "executionId"
+  field :skip_completed_steps, 2, type: :bool, json_name: "skipCompletedSteps"
+end
+
 defmodule Cerebelum.Worker.WorkerService.Service do
   @moduledoc false
 
@@ -299,6 +453,16 @@ defmodule Cerebelum.Worker.WorkerService.Service do
   rpc :SubmitBlueprint, Cerebelum.Worker.Blueprint, Cerebelum.Worker.BlueprintValidation
 
   rpc :ExecuteWorkflow, Cerebelum.Worker.ExecuteRequest, Cerebelum.Worker.ExecutionHandle
+
+  rpc :GetExecutionStatus,
+      Cerebelum.Worker.GetExecutionStatusRequest,
+      Cerebelum.Worker.ExecutionStatus
+
+  rpc :ListExecutions,
+      Cerebelum.Worker.ListExecutionsRequest,
+      Cerebelum.Worker.ListExecutionsResponse
+
+  rpc :ResumeExecution, Cerebelum.Worker.ResumeExecutionRequest, Cerebelum.Worker.ExecutionHandle
 end
 
 defmodule Cerebelum.Worker.WorkerService.Stub do

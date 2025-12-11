@@ -20,6 +20,11 @@ service WorkerService {
   // Workflow management
   rpc SubmitBlueprint(Blueprint) returns (BlueprintValidation);
   rpc ExecuteWorkflow(ExecuteRequest) returns (ExecutionHandle);
+
+  // Execution status and control (NEW)
+  rpc GetExecutionStatus(GetExecutionStatusRequest) returns (ExecutionStatus);
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+  rpc ResumeExecution(ResumeExecutionRequest) returns (ExecutionHandle);
 }
 
 // Worker Registration
@@ -203,4 +208,98 @@ message ExecutionHandle {
   string execution_id = 1;
   string status = 2;  // "running", "completed", "failed"
   google.protobuf.Timestamp started_at = 3;
+}
+
+// Execution Status Query (NEW)
+
+message GetExecutionStatusRequest {
+  string execution_id = 1;
+}
+
+message ExecutionStatus {
+  // Basic info
+  string execution_id = 1;
+  string workflow_name = 2;
+  ExecutionState status = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp completed_at = 5;  // Present if completed/failed
+
+  // Progress info
+  int32 current_step_index = 6;  // 0-indexed
+  int32 total_steps = 7;
+  string current_step_name = 8;  // Empty if completed
+
+  // Completed steps
+  repeated StepStatus completed_steps = 9;
+
+  // Inputs and outputs
+  google.protobuf.Struct inputs = 10;
+  map<string, google.protobuf.Struct> step_outputs = 11;
+
+  // Error if failed
+  ErrorInfo error = 12;
+
+  // Sleep info (if sleeping)
+  SleepInfo sleep_info = 13;
+
+  // Approval info (if waiting for approval)
+  ApprovalInfo approval_info = 14;
+}
+
+message StepStatus {
+  string step_name = 1;
+  int32 step_index = 2;
+  string status = 3;  // "completed", "failed", "running"
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp completed_at = 5;
+  int32 duration_seconds = 6;
+  google.protobuf.Struct output = 7;
+  ErrorInfo error = 8;  // Present if step failed
+}
+
+message SleepInfo {
+  int64 duration_ms = 1;  // Total sleep duration
+  google.protobuf.Timestamp sleep_started_at = 2;
+  int64 remaining_ms = 3;  // Remaining time
+  google.protobuf.Struct data = 4;  // Data carried through sleep
+}
+
+message ApprovalInfo {
+  string approval_type = 1;
+  google.protobuf.Struct data = 2;
+  int64 timeout_ms = 3;
+  google.protobuf.Timestamp requested_at = 4;
+  int64 remaining_timeout_ms = 5;
+}
+
+enum ExecutionState {
+  EXECUTION_STATE_UNSPECIFIED = 0;
+  EXECUTION_RUNNING = 1;
+  EXECUTION_COMPLETED = 2;
+  EXECUTION_FAILED = 3;
+  EXECUTION_SLEEPING = 4;
+  EXECUTION_WAITING_FOR_APPROVAL = 5;
+  EXECUTION_PAUSED = 6;
+}
+
+// List Executions (NEW)
+
+message ListExecutionsRequest {
+  optional string workflow_name = 1;  // Filter by workflow name
+  optional ExecutionState status = 2;  // Filter by status
+  int32 limit = 3;  // Default: 50, max: 100
+  int32 offset = 4;  // For pagination
+}
+
+message ListExecutionsResponse {
+  repeated ExecutionStatus executions = 1;
+  int32 total_count = 2;
+  bool has_more = 3;
+}
+
+// Resume Execution (NEW)
+
+message ResumeExecutionRequest {
+  string execution_id = 1;
+  bool skip_completed_steps = 2;  // Default: true
 }

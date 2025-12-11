@@ -76,6 +76,16 @@ from .blueprint import BlueprintSerializer
 from .executor import Executor, LocalExecutor
 from .distributed import DistributedExecutor, Worker
 
+# Execution Status Client (NEW - Phase: Info Workflow)
+from .execution_client import (
+    ExecutionClient,
+    ExecutionStatus,
+    ExecutionState,
+    StepStatus,
+    SleepInfo,
+    ApprovalInfo,
+)
+
 # New DSL (Phase 1-7 + Improvements)
 from .dsl import (
     step,
@@ -147,6 +157,13 @@ __all__ = [
     "DistributedExecutor",
     # Worker
     "Worker",
+    # Execution Status Client (NEW - Phase: Info Workflow)
+    "ExecutionClient",
+    "ExecutionStatus",
+    "ExecutionState",
+    "StepStatus",
+    "SleepInfo",
+    "ApprovalInfo",
     # Registries (advanced use)
     "StepRegistry",
     "WorkflowRegistry",

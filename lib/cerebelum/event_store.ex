@@ -139,6 +139,34 @@ defmodule Cerebelum.EventStore do
     GenServer.call(__MODULE__, :flush)
   end
 
+  @doc """
+  Lists execution IDs with optional filtering and pagination.
+
+  ## Options
+
+    * `:workflow_name` - Filter by workflow name (optional)
+    * `:status` - Filter by execution status: :running, :completed, :failed, :sleeping, :waiting_for_approval (optional)
+    * `:limit` - Maximum number of results (default: 50, max: 100)
+    * `:offset` - Number of results to skip for pagination (default: 0)
+
+  ## Returns
+
+    * `{:ok, execution_ids, total_count}` - List of execution IDs and total count
+    * `{:error, reason}` - On failure
+
+  ## Examples
+
+      iex> EventStore.list_executions(workflow_name: "MyWorkflow", limit: 10)
+      {:ok, ["exec-1", "exec-2"], 2}
+
+      iex> EventStore.list_executions(status: :running, limit: 50, offset: 0)
+      {:ok, ["exec-3", "exec-4"], 100}
+  """
+  @spec list_executions(keyword()) :: {:ok, [String.t()], non_neg_integer()} | {:error, term()}
+  def list_executions(opts \\ []) do
+    GenServer.call(__MODULE__, {:list_executions, opts}, 30_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -211,6 +239,16 @@ defmodule Cerebelum.EventStore do
     if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
 
     {:reply, :ok, %{state | batch: [], timer_ref: nil}}
+  end
+
+  @impl true
+  def handle_call({:list_executions, opts}, _from, state) do
+    result = query_executions(opts)
+    {:reply, result, state}
+  rescue
+    e ->
+      Logger.error("Error listing executions: #{inspect(e)}")
+      {:reply, {:error, e}, state}
   end
 
   @impl true
@@ -298,4 +336,89 @@ defmodule Cerebelum.EventStore do
     |> Event.changeset(attrs)
     |> Repo.insert()
   end
+
+  defp query_executions(opts) do
+    workflow_name = Keyword.get(opts, :workflow_name)
+    status_filter = Keyword.get(opts, :status)
+    limit = Keyword.get(opts, :limit, 50) |> min(100)
+    offset = Keyword.get(opts, :offset, 0) |> max(0)
+
+    # Base query: get distinct execution_ids with their latest event
+    base_query =
+      from e in Event,
+        distinct: e.execution_id,
+        select: %{
+          execution_id: e.execution_id,
+          latest_event_type: fragment("(
+            SELECT event_type FROM events
+            WHERE execution_id = ?
+            ORDER BY version DESC
+            LIMIT 1
+          )", e.execution_id),
+          workflow_name: fragment("(
+            SELECT event_data->>'workflow_module'
+            FROM events
+            WHERE execution_id = ? AND event_type = 'ExecutionStartedEvent'
+            LIMIT 1
+          )", e.execution_id)
+        },
+        order_by: [desc: e.inserted_at]
+
+    # Apply workflow_name filter
+    query = if workflow_name do
+      base_query
+      |> where([e], fragment("EXISTS (
+        SELECT 1 FROM events
+        WHERE execution_id = ? AND event_type = 'ExecutionStartedEvent'
+        AND event_data->>'workflow_module' = ?
+      )", e.execution_id, ^workflow_name))
+    else
+      base_query
+    end
+
+    # Get all matching executions (for count and status filtering)
+    all_executions = Repo.all(query)
+
+    # Apply status filter if specified
+    filtered_executions = if status_filter do
+      Enum.filter(all_executions, fn exec ->
+        matches_status?(exec.latest_event_type, status_filter)
+      end)
+    else
+      all_executions
+    end
+
+    total_count = length(filtered_executions)
+
+    # Apply pagination
+    execution_ids =
+      filtered_executions
+      |> Enum.drop(offset)
+      |> Enum.take(limit)
+      |> Enum.map(& &1.execution_id)
+
+    {:ok, execution_ids, total_count}
+  end
+
+  defp matches_status?(event_type, :running) do
+    event_type not in ["ExecutionCompletedEvent", "ExecutionFailedEvent", "SleepStartedEvent", "ApprovalRequestedEvent"]
+  end
+
+  defp matches_status?(event_type, :completed) do
+    event_type == "ExecutionCompletedEvent"
+  end
+
+  defp matches_status?(event_type, :failed) do
+    event_type == "ExecutionFailedEvent"
+  end
+
+  defp matches_status?(event_type, :sleeping) do
+    event_type == "SleepStartedEvent"
+  end
+
+  defp matches_status?(event_type, :waiting_for_approval) do
+    event_type == "ApprovalRequestedEvent"
+  end
+
+  defp matches_status?(_event_type, _status), do: false
 end
