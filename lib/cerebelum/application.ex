@@ -13,6 +13,9 @@ defmodule Cerebelum.Application do
       # Event store for event sourcing
       Cerebelum.EventStore,
 
+      # Execution registry for tracking active workflows
+      Cerebelum.Execution.Registry,
+
       # Execution supervisor for managing workflow executions
       Cerebelum.Execution.Supervisor,
 
@@ -29,7 +32,13 @@ defmodule Cerebelum.Application do
       Cerebelum.Infrastructure.ExecutionStateManager,
 
       # Dead Letter Queue for managing failed tasks
-      Cerebelum.Infrastructure.DLQ
+      Cerebelum.Infrastructure.DLQ,
+
+      # Resurrector for automatically resuming paused workflows on boot
+      Cerebelum.Execution.Resurrector,
+
+      # Workflow scheduler for periodic resurrection of hibernated workflows
+      Cerebelum.Infrastructure.WorkflowScheduler
     ]
 
     # Conditionally add gRPC server if enabled

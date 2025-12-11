@@ -59,7 +59,7 @@ defmodule Cerebelum.Execution.Engine do
     %{
       id: __MODULE__,
       start: {__MODULE__, :start_link, [opts]},
-      restart: :temporary,
+      restart: :transient,  # Changed from :temporary to enable resurrection
       type: :worker
     }
   end
@@ -151,16 +151,45 @@ defmodule Cerebelum.Execution.Engine do
 
   @impl true
   def init(opts) do
-    workflow_module = Keyword.fetch!(opts, :workflow_module)
-    inputs = Keyword.get(opts, :inputs, %{})
-    context_opts = Keyword.get(opts, :context_opts, [])
+    case Keyword.get(opts, :resume_from) do
+      nil ->
+        # Normal startup - create new execution
+        workflow_module = Keyword.fetch!(opts, :workflow_module)
+        inputs = Keyword.get(opts, :inputs, %{})
+        context_opts = Keyword.get(opts, :context_opts, [])
 
-    data = Data.new(workflow_module, inputs, context_opts)
+        data = Data.new(workflow_module, inputs, context_opts)
 
-    Logger.info("Initializing execution: #{data.context.execution_id}")
+        Logger.info("Initializing execution: #{data.context.execution_id}")
 
-    # Start in :initializing state, then transition to :executing_step
-    {:ok, :initializing, data, [{:next_event, :internal, :start}]}
+        # Register with execution registry
+        Cerebelum.Execution.Registry.register_execution(data.context.execution_id, self())
+
+        # Start in :initializing state, then transition to :executing_step
+        {:ok, :initializing, data, [{:next_event, :internal, :start}]}
+
+      %Data{} = resumed_data ->
+        # Resume mode - reconstruct from events
+        Logger.info("Resuming execution: #{resumed_data.context.execution_id}")
+
+        # Register with execution registry
+        case Cerebelum.Execution.Registry.register_execution(resumed_data.context.execution_id, self()) do
+          :ok ->
+            # Determine resume state and prepare actions
+            {resume_state, resume_data, actions} = prepare_resume(resumed_data)
+
+            Logger.info(
+              "Resuming in state #{resume_state} for execution #{resume_data.context.execution_id}"
+            )
+
+            {:ok, resume_state, resume_data, actions}
+
+          {:error, :already_registered} ->
+            # Execution is already running - prevent duplicate
+            Logger.warning("Execution #{resumed_data.context.execution_id} already running")
+            {:stop, :already_running}
+        end
+    end
   end
 
   @impl true
@@ -199,5 +228,109 @@ defmodule Cerebelum.Execution.Engine do
   @doc false
   def waiting_for_approval(event_type, event_content, data) do
     StateHandlers.waiting_for_approval(event_type, event_content, data)
+  end
+
+  ## Private Helpers for Resurrection
+
+  # Prepares the resume state and actions based on reconstructed data
+  defp prepare_resume(data) do
+    cond do
+      # If there's an error, resume in failed state
+      data.error != nil ->
+        {:failed, data, []}
+
+      # If workflow is finished, resume in completed state
+      Data.finished?(data) ->
+        {:completed, data, []}
+
+      # If sleeping, calculate remaining time and resume in sleeping state
+      data.sleep_duration_ms != nil && data.sleep_started_at != nil ->
+        prepare_sleep_resume(data)
+
+      # If waiting for approval, calculate remaining time and resume in waiting state
+      data.approval_type != nil && data.approval_started_at != nil ->
+        prepare_approval_resume(data)
+
+      # Otherwise, resume execution at current step
+      true ->
+        {:executing_step, data, [{:next_event, :internal, :execute}]}
+    end
+  end
+
+  # Prepares resume for sleeping state
+  defp prepare_sleep_resume(data) do
+    now_wall_ms = System.system_time(:millisecond)
+    elapsed_wall_ms = now_wall_ms - data.sleep_started_at
+    remaining_ms = data.sleep_duration_ms - elapsed_wall_ms
+
+    if remaining_ms <= 0 do
+      # Sleep time has already elapsed - wake up immediately and advance
+      Logger.info(
+        "Sleep already elapsed for #{data.context.execution_id}, waking immediately"
+      )
+
+      # Clear sleep state and advance step
+      resumed_data = %{data |
+        sleep_duration_ms: nil,
+        sleep_started_at: nil,
+        sleep_step_name: nil,
+        sleep_result: nil
+      }
+      |> Data.advance_step()
+
+      # Continue execution
+      {:executing_step, resumed_data, [{:next_event, :internal, :execute}]}
+    else
+      # Resume sleeping with remaining time
+      Logger.info(
+        "Resuming sleep for #{data.context.execution_id}, #{remaining_ms}ms remaining"
+      )
+
+      # Use state_timeout to wake up after remaining time
+      {:sleeping, data, [{:state_timeout, remaining_ms, :wake_up}]}
+    end
+  end
+
+  # Prepares resume for approval waiting state
+  defp prepare_approval_resume(data) do
+    case data.approval_timeout_ms do
+      nil ->
+        # No timeout - just wait indefinitely
+        Logger.info(
+          "Resuming approval wait for #{data.context.execution_id} (no timeout)"
+        )
+
+        {:waiting_for_approval, data, []}
+
+      timeout_ms when is_integer(timeout_ms) ->
+        # Calculate remaining timeout
+        now_wall_ms = System.system_time(:millisecond)
+        elapsed_wall_ms = now_wall_ms - data.approval_started_at
+        remaining_ms = timeout_ms - elapsed_wall_ms
+
+        if remaining_ms <= 0 do
+          # Approval has already timed out - fail immediately
+          Logger.warning(
+            "Approval timeout already elapsed for #{data.context.execution_id}"
+          )
+
+          error_info = %Cerebelum.Execution.ErrorInfo{
+            kind: :approval_timeout,
+            reason: :timeout,
+            step_name: data.approval_step_name,
+            execution_id: data.context.execution_id
+          }
+
+          failed_data = Data.mark_failed(data, error_info)
+          {:failed, failed_data, []}
+        else
+          # Resume waiting with remaining timeout
+          Logger.info(
+            "Resuming approval wait for #{data.context.execution_id}, #{remaining_ms}ms timeout remaining"
+          )
+
+          {:waiting_for_approval, data, [{:state_timeout, remaining_ms, :approval_timeout}]}
+        end
+    end
   end
 end
