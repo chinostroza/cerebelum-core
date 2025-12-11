@@ -114,25 +114,31 @@ defmodule Cerebelum.Infrastructure.WorkflowScheduler do
 
   @impl true
   def init(_opts) do
-    # Check if resurrection is enabled
-    if resurrection_enabled?() do
-      scan_interval_ms = get_scan_interval_ms()
-
-      Logger.info(
-        "WorkflowScheduler started, will scan every #{scan_interval_ms}ms"
-      )
-
-      # Schedule first scan
-      timer_ref = schedule_next_scan(scan_interval_ms)
-
-      {:ok,
-       %State{
-         scan_timer_ref: timer_ref,
-         scan_interval_ms: scan_interval_ms
-       }}
-    else
-      Logger.info("WorkflowScheduler disabled (resurrection not enabled)")
+    # Don't start scheduler in test environment
+    if Mix.env() == :test do
+      Logger.debug("WorkflowScheduler disabled in test environment")
       :ignore
+    else
+      # Check if resurrection is enabled
+      if resurrection_enabled?() do
+        scan_interval_ms = get_scan_interval_ms()
+
+        Logger.info(
+          "WorkflowScheduler started, will scan every #{scan_interval_ms}ms"
+        )
+
+        # Schedule first scan
+        timer_ref = schedule_next_scan(scan_interval_ms)
+
+        {:ok,
+         %State{
+           scan_timer_ref: timer_ref,
+           scan_interval_ms: scan_interval_ms
+         }}
+      else
+        Logger.info("WorkflowScheduler disabled (resurrection not enabled)")
+        :ignore
+      end
     end
   end
 

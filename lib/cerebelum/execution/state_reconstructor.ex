@@ -309,7 +309,13 @@ defmodule Cerebelum.Execution.StateReconstructor do
 
   defp apply_event_to_engine_data(%SleepStartedEvent{} = event, data) do
     # Convert DateTime to milliseconds since epoch (wall clock time)
-    started_at_ms = DateTime.to_unix(event.timestamp, :millisecond)
+    # Handle both DateTime structs and ISO8601 strings from deserialization
+    started_at_ms = case event.timestamp do
+      %DateTime{} = dt -> DateTime.to_unix(dt, :millisecond)
+      timestamp_string when is_binary(timestamp_string) ->
+        {:ok, dt, _} = DateTime.from_iso8601(timestamp_string)
+        DateTime.to_unix(dt, :millisecond)
+    end
 
     %{data |
       sleep_duration_ms: event.duration_ms,

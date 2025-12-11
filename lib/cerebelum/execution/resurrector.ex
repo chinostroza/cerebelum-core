@@ -119,12 +119,18 @@ defmodule Cerebelum.Execution.Resurrector do
 
   @impl true
   def init(_opts) do
-    Logger.info("Resurrector started, will scan for paused workflows in #{@resurrection_delay_ms}ms")
+    # Don't start resurrector in test environment
+    if Mix.env() == :test do
+      Logger.debug("Resurrector disabled in test environment")
+      :ignore
+    else
+      Logger.info("Resurrector started, will scan for paused workflows in #{@resurrection_delay_ms}ms")
 
-    # Schedule initial resurrection after delay
-    Process.send_after(self(), :resurrect, @resurrection_delay_ms)
+      # Schedule initial resurrection after delay
+      Process.send_after(self(), :resurrect, @resurrection_delay_ms)
 
-    {:ok, %State{}}
+      {:ok, %State{}}
+    end
   end
 
   @impl true

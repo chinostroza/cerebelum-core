@@ -402,56 +402,71 @@ defmodule Cerebelum.Execution.Engine.StateHandlers do
 
   Uses state_timeout to wake up without blocking the process.
   """
-  def sleeping(:enter, _old_state, data) do
+  def sleeping(:enter, old_state, data) do
     Logger.info("Entering :sleeping state for #{data.sleep_duration_ms}ms")
 
-    # Emit SleepStartedEvent
-    {version, data} = Data.next_event_version(data)
+    # Only emit SleepStartedEvent if this is a NEW sleep (not a resume)
+    # When resuming, old_state will be :sleeping (same state)
+    # When entering for first time, old_state will be :executing_step
+    data = if old_state != :sleeping do
+      {version, data} = Data.next_event_version(data)
 
-    event =
-      Cerebelum.Events.SleepStartedEvent.new(
-        data.context.execution_id,
-        data.sleep_step_name,
-        data.sleep_duration_ms,
-        version
-      )
-
-    Cerebelum.EventStore.append(data.context.execution_id, event, version)
-
-    # Check if should hibernate (for long sleeps)
-    should_hibernate = should_hibernate_workflow?(data)
-
-    if should_hibernate do
-      # Hibernate: persist state and terminate process
-      Logger.info(
-        "Hibernating workflow #{data.context.execution_id} for #{data.sleep_duration_ms}ms"
-      )
-
-      # Calculate resume_at time
-      resume_at = DateTime.add(DateTime.utc_now(), data.sleep_duration_ms, :millisecond)
-
-      # Create pause record in database
-      :ok = record_hibernation_pause(data, resume_at)
-
-      # Emit WorkflowHibernatedEvent
-      {hibernate_version, data} = Data.next_event_version(data)
-
-      hibernate_event =
-        Cerebelum.Events.WorkflowHibernatedEvent.new(
+      event =
+        Cerebelum.Events.SleepStartedEvent.new(
           data.context.execution_id,
           data.sleep_step_name,
-          "sleep",
-          resume_at,
-          hibernate_version
+          data.sleep_duration_ms,
+          version
         )
 
-      Cerebelum.EventStore.append_sync(data.context.execution_id, hibernate_event, hibernate_version)
-
-      # Terminate process gracefully (will be resurrected by scheduler)
-      {:stop, :normal, data}
+      Cerebelum.EventStore.append(data.context.execution_id, event, version)
+      data
     else
-      # Normal in-memory sleep (current behavior)
-      {:keep_state, data, [{:state_timeout, data.sleep_duration_ms, :wake_up}]}
+      # Resuming - event was already emitted before, don't emit again
+      data
+    end
+
+    # When resuming, prepare_sleep_resume already set the state_timeout with remaining time
+    # Don't override it here - just keep the state
+    if old_state == :sleeping do
+      # Resuming - timeout already set by prepare_sleep_resume
+      {:keep_state, data}
+    else
+      # First time entering sleep - check if should hibernate
+      should_hibernate = should_hibernate_workflow?(data)
+
+      if should_hibernate do
+        # Hibernate: persist state and terminate process
+        Logger.info(
+          "Hibernating workflow #{data.context.execution_id} for #{data.sleep_duration_ms}ms"
+        )
+
+        # Calculate resume_at time
+        resume_at = DateTime.add(DateTime.utc_now(), data.sleep_duration_ms, :millisecond)
+
+        # Create pause record in database
+        :ok = record_hibernation_pause(data, resume_at)
+
+        # Emit WorkflowHibernatedEvent
+        {hibernate_version, data} = Data.next_event_version(data)
+
+        hibernate_event =
+          Cerebelum.Events.WorkflowHibernatedEvent.new(
+            data.context.execution_id,
+            data.sleep_step_name,
+            "sleep",
+            resume_at,
+            hibernate_version
+          )
+
+        Cerebelum.EventStore.append_sync(data.context.execution_id, hibernate_event, hibernate_version)
+
+        # Terminate process gracefully (will be resurrected by scheduler)
+        {:stop, :normal, data}
+      else
+        # Normal in-memory sleep
+        {:keep_state, data, [{:state_timeout, data.sleep_duration_ms, :wake_up}]}
+      end
     end
   end
 
