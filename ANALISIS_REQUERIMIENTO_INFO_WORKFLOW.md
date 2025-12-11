@@ -1,8 +1,9 @@
 # Análisis: Requerimiento Info Workflow
 
 **Fecha:** 2024-12-11
-**Estado:** ✅ FASE 1 + 2 COMPLETADAS (Core APIs + Python SDK)
+**Estado:** ✅ COMPLETADO (Core APIs + Python SDK) - COMMIT REALIZADO
 **Branch:** `feature/info-workflow`
+**Commit:** `feat(info-workflow): implement execution status query API (Phase 1+2)`
 
 ## 🎉 IMPLEMENTACIÓN COMPLETADA
 
@@ -63,6 +64,41 @@
   ```
 
 **Status:** ✅ Cliente implementado, ejemplos listos
+
+### Fase 3: CLI Tools ✅
+
+**Archivo Creado:**
+- `examples/python-sdk/cerebelum_cli.py` (400+ líneas)
+- `examples/python-sdk/CLI_README.md` - Documentación completa
+
+**Comandos Implementados:**
+- `cerebelum list [--status] [--workflow] [--limit]` - List executions with filters
+- `cerebelum status <execution_id>` - Show detailed status
+- `cerebelum watch <execution_id> [--interval]` - Real-time monitoring
+- `cerebelum resume <execution_id>` - Resume failed executions
+- `cerebelum active` - Show active workflows
+
+**Features:**
+- Filtrado por status y workflow_name
+- Progress bars visuales
+- Emojis y símbolos para mejor UX
+- Real-time updates con auto-refresh
+- Support para CEREBELUM_CORE_URL env var
+- Comprehensive error messages
+
+**Uso:**
+```bash
+# List running workflows
+cerebelum list --status running
+
+# Watch deployment
+cerebelum watch abc-123
+
+# Resume failed
+cerebelum resume abc-123
+```
+
+**Status:** ✅ CLI completo, documentado y listo para uso
 
 ---
 
