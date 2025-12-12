@@ -76,7 +76,17 @@ from .blueprint import BlueprintSerializer
 from .executor import Executor, LocalExecutor
 from .distributed import DistributedExecutor, Worker
 
-# New DSL (Phase 1-6 + Improvements)
+# Execution Status Client (NEW - Phase: Info Workflow)
+from .execution_client import (
+    ExecutionClient,
+    ExecutionStatus,
+    ExecutionState,
+    StepStatus,
+    SleepInfo,
+    ApprovalInfo,
+)
+
+# New DSL (Phase 1-7 + Improvements)
 from .dsl import (
     step,
     workflow,
@@ -88,6 +98,11 @@ from .dsl import (
     DSLSerializer,
     DSLLocalExecutor,
     DSLExecutionAdapter,
+    # Async helpers (Phase 7)
+    sleep,
+    poll,
+    retry,
+    ProgressReporter,
 )
 
 # Note: StepMetadata and WorkflowMetadata are imported but not exported
@@ -108,6 +123,11 @@ __all__ = [
     "DSLSerializer",
     "DSLLocalExecutor",
     "DSLExecutionAdapter",
+    # Async Helpers (Phase 7 - Long-running operations)
+    "sleep",
+    "poll",
+    "retry",
+    "ProgressReporter",
     # Types
     "ActionType",
     "BranchAction",
@@ -137,6 +157,13 @@ __all__ = [
     "DistributedExecutor",
     # Worker
     "Worker",
+    # Execution Status Client (NEW - Phase: Info Workflow)
+    "ExecutionClient",
+    "ExecutionStatus",
+    "ExecutionState",
+    "StepStatus",
+    "SleepInfo",
+    "ApprovalInfo",
     # Registries (advanced use)
     "StepRegistry",
     "WorkflowRegistry",

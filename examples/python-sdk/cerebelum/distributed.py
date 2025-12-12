@@ -9,6 +9,7 @@ import grpc
 from google.protobuf import struct_pb2, timestamp_pb2
 
 from .blueprint import BlueprintSerializer
+from .dsl.workflow_markers import WorkflowMarker
 from .proto import (
     Ack,
     Blueprint,
@@ -577,6 +578,60 @@ class Worker:
                 error=None,
                 completed_at=self._current_timestamp(),
             )
+
+        except WorkflowMarker as marker:
+            # Handle workflow control flow markers (sleep, approval, etc.)
+            from .dsl.workflow_markers import SleepMarker, ApprovalMarker
+
+            if isinstance(marker, SleepMarker):
+                # Step requested sleep
+                # WORKAROUND: Protobuf hasn't been regenerated yet, so SLEEP status doesn't exist
+                # Encode sleep request in result data with special marker
+                # TODO: After protobuf regeneration, use TaskStatus.SLEEP and sleep_request field
+                sleep_data = {
+                    "__cerebelum_sleep_request__": True,
+                    "duration_ms": marker.duration_ms,
+                    "data": marker.data
+                }
+
+                result_struct = self._dict_to_struct(sleep_data)
+
+                return TaskResult(
+                    task_id=task.task_id,
+                    execution_id=task.execution_id,
+                    worker_id=self.worker_id,
+                    status=TaskStatus.SUCCESS,  # Use SUCCESS for now
+                    result=result_struct,
+                    error=None,
+                    completed_at=self._current_timestamp(),
+                )
+
+            elif isinstance(marker, ApprovalMarker):
+                # Step requested approval
+                # WORKAROUND: Protobuf hasn't been regenerated yet
+                # Encode approval request in result data with special marker
+                # TODO: After protobuf regeneration, use TaskStatus.APPROVAL and approval_request field
+                approval_data = {
+                    "__cerebelum_approval_request__": True,
+                    "approval_type": marker.approval_type,
+                    "data": marker.data,
+                    "timeout_ms": marker.timeout_ms
+                }
+
+                result_struct = self._dict_to_struct(approval_data)
+
+                return TaskResult(
+                    task_id=task.task_id,
+                    execution_id=task.execution_id,
+                    worker_id=self.worker_id,
+                    status=TaskStatus.SUCCESS,  # Use SUCCESS for now
+                    result=result_struct,
+                    error=None,
+                    completed_at=self._current_timestamp(),
+                )
+            else:
+                # Unknown workflow marker
+                raise
 
         except Exception as e:
             import traceback

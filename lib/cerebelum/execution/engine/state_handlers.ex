@@ -402,24 +402,72 @@ defmodule Cerebelum.Execution.Engine.StateHandlers do
 
   Uses state_timeout to wake up without blocking the process.
   """
-  def sleeping(:enter, _old_state, data) do
+  def sleeping(:enter, old_state, data) do
     Logger.info("Entering :sleeping state for #{data.sleep_duration_ms}ms")
 
-    # Emit SleepStartedEvent
-    {version, data} = Data.next_event_version(data)
+    # Only emit SleepStartedEvent if this is a NEW sleep (not a resume)
+    # When resuming, old_state will be :sleeping (same state)
+    # When entering for first time, old_state will be :executing_step
+    data = if old_state != :sleeping do
+      {version, data} = Data.next_event_version(data)
 
-    event =
-      Cerebelum.Events.SleepStartedEvent.new(
-        data.context.execution_id,
-        data.sleep_step_name,
-        data.sleep_duration_ms,
-        version
-      )
+      event =
+        Cerebelum.Events.SleepStartedEvent.new(
+          data.context.execution_id,
+          data.sleep_step_name,
+          data.sleep_duration_ms,
+          version
+        )
 
-    Cerebelum.EventStore.append(data.context.execution_id, event, version)
+      Cerebelum.EventStore.append(data.context.execution_id, event, version)
+      data
+    else
+      # Resuming - event was already emitted before, don't emit again
+      data
+    end
 
-    # Set state timeout to wake up
-    {:keep_state, data, [{:state_timeout, data.sleep_duration_ms, :wake_up}]}
+    # When resuming, prepare_sleep_resume already set the state_timeout with remaining time
+    # Don't override it here - just keep the state
+    if old_state == :sleeping do
+      # Resuming - timeout already set by prepare_sleep_resume
+      {:keep_state, data}
+    else
+      # First time entering sleep - check if should hibernate
+      should_hibernate = should_hibernate_workflow?(data)
+
+      if should_hibernate do
+        # Hibernate: persist state and terminate process
+        Logger.info(
+          "Hibernating workflow #{data.context.execution_id} for #{data.sleep_duration_ms}ms"
+        )
+
+        # Calculate resume_at time
+        resume_at = DateTime.add(DateTime.utc_now(), data.sleep_duration_ms, :millisecond)
+
+        # Create pause record in database
+        :ok = record_hibernation_pause(data, resume_at)
+
+        # Emit WorkflowHibernatedEvent
+        {hibernate_version, data} = Data.next_event_version(data)
+
+        hibernate_event =
+          Cerebelum.Events.WorkflowHibernatedEvent.new(
+            data.context.execution_id,
+            data.sleep_step_name,
+            "sleep",
+            resume_at,
+            hibernate_version
+          )
+
+        Cerebelum.EventStore.append_sync(data.context.execution_id, hibernate_event, hibernate_version)
+
+        # Terminate process gracefully (will be resurrected by scheduler)
+        {:stop, :normal, data}
+      else
+        # Normal in-memory sleep
+        {:keep_state, data, [{:state_timeout, data.sleep_duration_ms, :wake_up}]}
+      end
+    end
   end
 
   def sleeping(:state_timeout, :wake_up, data) do
@@ -686,5 +734,44 @@ defmodule Cerebelum.Execution.Engine.StateHandlers do
 
     # Transition to waiting_for_approval state
     {:next_state, :waiting_for_approval, data}
+  end
+
+  ## Private Helpers for Hibernation
+
+  # Determines if a workflow should be hibernated based on configuration
+  defp should_hibernate_workflow?(data) do
+    enabled = Application.get_env(:cerebelum_core, :enable_workflow_hibernation, false)
+    threshold = Application.get_env(:cerebelum_core, :hibernation_threshold_ms, 3_600_000)
+
+    # Hibernate if:
+    # 1. Hibernation is enabled in config
+    # 2. Sleep duration exceeds threshold (default: 1 hour)
+    enabled and data.sleep_duration_ms >= threshold
+  end
+
+  # Records hibernation pause in the database
+  defp record_hibernation_pause(data, resume_at) do
+    pause_attrs = %{
+      execution_id: data.context.execution_id,
+      workflow_module: to_string(data.context.workflow_module),
+      pause_type: "sleep",
+      resume_at: resume_at,
+      hibernated: false,
+      event_version: data.event_version,
+      current_step_index: data.current_step_index,
+      current_step_name: to_string(data.sleep_step_name),
+      sleep_duration_ms: data.sleep_duration_ms,
+      sleep_started_at: DateTime.utc_now()
+    }
+
+    case Cerebelum.Persistence.WorkflowPause.changeset(%Cerebelum.Persistence.WorkflowPause{}, pause_attrs)
+         |> Cerebelum.Repo.insert() do
+      {:ok, _pause} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.error("Failed to create hibernation pause record: #{inspect(changeset)}")
+        :ok  # Don't fail the workflow, just log
+    end
   end
 end

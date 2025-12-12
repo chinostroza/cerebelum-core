@@ -23,6 +23,8 @@ defmodule Cerebelum.Events do
   - `ApprovalReceivedEvent` - Approval granted
   - `ApprovalRejectedEvent` - Approval rejected
   - `ApprovalTimeoutEvent` - Approval request timed out
+  - `WorkflowHibernatedEvent` - Workflow hibernated (process terminated to save memory)
+  - `WorkflowAwakenedEvent` - Workflow resurrected from hibernation
   - `ExecutionCompletedEvent` - Workflow completes successfully
   - `ExecutionFailedEvent` - Workflow fails
 
@@ -840,6 +842,88 @@ defmodule Cerebelum.Events do
         execution_id: execution_id,
         step_name: step_name,
         timeout_ms: timeout_ms,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule WorkflowHibernatedEvent do
+    @moduledoc """
+    Event fired when a workflow is hibernated.
+
+    Hibernation terminates the workflow process to save memory during
+    long sleeps or approval waits. The workflow state is persisted in
+    the workflow_pauses table and can be resurrected later by the
+    WorkflowScheduler.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            step_name: atom(),
+            pause_type: String.t(),
+            resume_at: DateTime.t(),
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :step_name,
+      :pause_type,
+      :resume_at,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), atom(), String.t(), DateTime.t(), non_neg_integer()) :: t()
+    def new(execution_id, step_name, pause_type, resume_at, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        step_name: step_name,
+        pause_type: pause_type,
+        resume_at: resume_at,
+        timestamp: DateTime.utc_now(),
+        version: version
+      }
+    end
+  end
+
+  defmodule WorkflowAwakenedEvent do
+    @moduledoc """
+    Event fired when a hibernated workflow is resurrected.
+
+    This event is emitted when the WorkflowScheduler resurrects a
+    hibernated workflow that is ready to resume execution.
+    """
+
+    @derive Jason.Encoder
+    @type t :: %__MODULE__{
+            event_id: String.t(),
+            execution_id: String.t(),
+            hibernation_duration_ms: non_neg_integer(),
+            timestamp: DateTime.t(),
+            version: non_neg_integer()
+          }
+
+    defstruct [
+      :event_id,
+      :execution_id,
+      :hibernation_duration_ms,
+      :timestamp,
+      :version
+    ]
+
+    @spec new(String.t(), non_neg_integer(), non_neg_integer()) :: t()
+    def new(execution_id, hibernation_duration_ms, version) do
+      %__MODULE__{
+        event_id: Ecto.UUID.generate(),
+        execution_id: execution_id,
+        hibernation_duration_ms: hibernation_duration_ms,
         timestamp: DateTime.utc_now(),
         version: version
       }

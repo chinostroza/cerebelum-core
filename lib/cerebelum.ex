@@ -59,6 +59,94 @@ defmodule Cerebelum do
         }
 
   @doc """
+  Sleep for a specified duration within a workflow step.
+
+  This function pauses execution for the specified duration. When used
+  in workflows with resurrection enabled, the workflow state is preserved
+  and can survive system restarts.
+
+  ## Parameters
+
+  - `duration_ms` - Sleep duration in milliseconds (integer)
+
+  ## Returns
+
+  - `:ok` - Always returns :ok after sleep completes
+
+  ## Examples
+
+      defmodule MyWorkflow do
+        use Cerebelum.Workflow
+
+        workflow do
+          timeline do
+            send_email() |> wait_24h() |> send_reminder()
+          end
+        end
+
+        def wait_24h(_context, _result) do
+          # Sleep for 24 hours
+          Cerebelum.sleep(24 * 60 * 60 * 1000)
+          {:ok, :awake}
+        end
+      end
+
+  ## Behavior
+
+  - Sleeps < 1 hour: Uses in-memory process sleep
+  - Sleeps > 1 hour (default threshold): Workflow may hibernate to save memory
+  - Workflows survive system restarts during sleep (with resurrection enabled)
+  - State is automatically reconstructed when workflow wakes up
+
+  ## Notes
+
+  When hibernation is enabled (`:enable_workflow_hibernation` config), workflows
+  sleeping longer than `:hibernation_threshold_ms` will:
+  1. Save state to database
+  2. Terminate process to free memory
+  3. Be automatically resurrected by WorkflowScheduler
+  4. Continue execution seamlessly after sleep
+  """
+  @spec sleep(non_neg_integer()) :: :ok
+  def sleep(duration_ms) when is_integer(duration_ms) and duration_ms >= 0 do
+    # Use standard Process.sleep
+    # The Engine's state machine will handle hibernation if configured
+    Process.sleep(duration_ms)
+    :ok
+  end
+
+  @doc """
+  Resume a paused workflow execution.
+
+  Reconstructs workflow state from events and resumes execution.
+  Used for workflow resurrection after system restarts or crashes.
+
+  ## Parameters
+
+  - `execution_id` - The unique execution identifier (string)
+
+  ## Returns
+
+  - `{:ok, pid}` - New process ID of resumed execution
+  - `{:error, :already_running}` - Execution is already running
+  - `{:error, :not_resumable}` - Execution cannot be resumed (completed/failed)
+  - `{:error, :not_found}` - No events found for this execution
+
+  ## Examples
+
+      # After system restart, resume paused workflow
+      {:ok, pid} = Cerebelum.resume_execution("exec-abc-123")
+
+      # Check status of resumed workflow
+      {:ok, status} = Cerebelum.get_execution_status(pid)
+      IO.puts("Resumed at step: \#{status.current_step}")
+  """
+  @spec resume_execution(String.t()) :: {:ok, pid()} | {:error, term()}
+  def resume_execution(execution_id) when is_binary(execution_id) do
+    Supervisor.resume_execution(execution_id)
+  end
+
+  @doc """
   Executes a workflow with the given inputs.
 
   This starts a new workflow execution as a supervised process.

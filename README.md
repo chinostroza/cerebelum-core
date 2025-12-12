@@ -26,7 +26,7 @@ Cerebelum Core is a **general-purpose workflow orchestration engine** built with
 - **🔀 Graph-Based Workflows** - Cycles, conditional branches, and error divergence (like LangGraph)
 - **🌐 Multi-Language Support** - Python, Kotlin, TypeScript SDKs via gRPC
 - **⚡ High Performance** - Built on Erlang/OTP with supervised process trees
-- **🔄 Long-Running Workflows** - Checkpointing, human-in-the-loop approvals
+- **🔄 Long-Running Workflows** - Workflow resurrection, hibernation, survive restarts
 - **🏗️ Clean Architecture** - SOLID principles, testable, maintainable
 
 > **Note:** This is a general-purpose workflow engine. AI/LLM features are in the separate `cerebelum-ai` module.
@@ -103,6 +103,77 @@ Write workflow steps in any language:
 | **Elixir** | ✅ Native | N/A | ✅ |
 | Kotlin | 🚧 Planned | ✅ | - |
 | TypeScript | 🚧 Planned | ✅ | - |
+
+### Workflow Resurrection & Long-Running Workflows
+
+Workflows can sleep for days/weeks and survive system restarts:
+
+```elixir
+workflow do
+  timeline do
+    send_reminder() |> sleep_7_days() |> check_response() |> finalize()
+  end
+end
+
+def sleep_7_days(context, _reminder_result) do
+  # Workflow sleeps for 7 days
+  Cerebelum.sleep(7 * 24 * 60 * 60 * 1000)  # 7 days in milliseconds
+  {:ok, :awake}
+end
+
+# Workflow will:
+# 1. Execute send_reminder()
+# 2. Hibernate the process (save to database, terminate process)
+# 3. External scheduler resurrects after 7 days
+# 4. Continue with check_response() and finalize()
+```
+
+**Key Features:**
+
+- **🔄 Automatic Resurrection** - Boot-time and periodic scanning for paused workflows
+- **💾 Process Hibernation** - Long sleeps terminate process to save memory (~50KB per workflow)
+- **⏰ Precise Timing** - Wall clock time ensures correct wake-up after restarts
+- **🔁 Retry & DLQ** - Failed resurrections retry (max 3 attempts) then move to Dead Letter Queue
+- **📊 Telemetry** - Monitor resurrection success rates and performance
+
+**Configuration:**
+
+```elixir
+# config/config.exs
+config :cerebelum_core,
+  # Enable workflow resurrection (default: true)
+  enable_workflow_resurrection: true,
+
+  # Scan interval for periodic resurrection (default: 30s)
+  resurrection_scan_interval_ms: 30_000,
+
+  # Enable hibernation for long sleeps (default: false for safety)
+  enable_workflow_hibernation: false,
+
+  # Hibernate workflows sleeping longer than 1 hour (default)
+  hibernation_threshold_ms: 3_600_000,
+
+  # Max resurrection attempts before DLQ (default: 3)
+  max_resurrection_attempts: 3
+```
+
+**How It Works:**
+
+1. **Sleep Detection** - Engine detects sleep durations > hibernation threshold
+2. **Hibernation** - Process terminates, state saved to `workflow_pauses` table
+3. **Scheduler** - External GenServer scans every 30s for workflows ready to wake
+4. **Resurrection** - State reconstructed from events, workflow resumes execution
+5. **Cleanup** - Successful resurrection removes pause record
+
+**Use Cases:**
+
+- Human-in-the-loop approvals waiting days for response
+- Scheduled reminders and notifications
+- Multi-day onboarding workflows
+- Compliance workflows with long waiting periods
+- Any workflow that needs to survive system restarts
+
+See [docs/long-running-workflows.md](./docs/long-running-workflows.md) for complete guide.
 
 ---
 
@@ -390,6 +461,13 @@ python3 07_execute_workflow.py "Jane Doe" "jane@company.com" "Engineering" "Deve
 - `EventStore` - Append-only event log with batching
 - `Events` - 18 event types (ExecutionStarted, StepExecuted, etc.)
 - `StateReconstructor` - Replay execution from events
+
+**Workflow Resurrection:**
+- `Execution.Registry` - execution_id → PID mapping with O(1) lookup
+- `Execution.Resurrector` - Boot-time scanning and resurrection
+- `Infrastructure.WorkflowScheduler` - Periodic resurrection (30s intervals)
+- `Persistence.WorkflowPause` - Hibernated workflow persistence
+- `resume_execution/1` API - Manual workflow resurrection
 
 ---
 

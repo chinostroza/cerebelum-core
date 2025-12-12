@@ -87,6 +87,102 @@ defmodule Cerebelum.Execution.Supervisor do
   end
 
   @doc """
+  Resumes a paused or crashed workflow execution from its event history.
+
+  This function enables workflow resurrection after system restarts, crashes,
+  or for resuming long-running workflows that were paused (sleeping/approval).
+
+  ## Parameters
+
+  - `execution_id` - The unique execution ID to resume
+
+  ## Returns
+
+  - `{:ok, pid}` - The execution engine PID
+  - `{:error, :not_found}` - No events found for this execution
+  - `{:error, :already_running}` - Execution is already running
+  - `{:error, reason}` - Other errors during resurrection
+
+  ## Examples
+
+      # Resume a sleeping workflow after server restart
+      {:ok, pid} = Supervisor.resume_execution("exec-abc-123")
+
+      # Try to resume a non-existent execution
+      {:error, :not_found} = Supervisor.resume_execution("unknown")
+
+      # Try to resume an already running execution
+      {:error, :already_running} = Supervisor.resume_execution("exec-running")
+
+  ## How It Works
+
+  1. Checks if execution is already running (via Registry)
+  2. Reconstructs execution state from event history
+  3. Validates state is resumable (not permanently completed/failed)
+  4. Starts Engine with reconstructed state
+  5. Engine determines resume state (sleeping, waiting, executing, etc.)
+  6. Calculates remaining sleep/approval time if applicable
+
+  ## Use Cases
+
+  - Resurrect workflows after server restart
+  - Resume multi-day workflows
+  - Recover from crashes mid-execution
+  - Continue approval workflows after system maintenance
+  """
+  @spec resume_execution(String.t()) :: {:ok, pid()} | {:error, term()}
+  def resume_execution(execution_id) when is_binary(execution_id) do
+    # Check if execution is already running
+    case get_execution_pid(execution_id) do
+      {:ok, _pid} ->
+        {:error, :already_running}
+
+      {:error, :not_found} ->
+        # Reconstruct state from events
+        case Cerebelum.Execution.StateReconstructor.reconstruct_to_engine_data(execution_id) do
+          {:ok, engine_data} ->
+            # Validate state is resumable
+            if resumable?(engine_data) do
+              # Start child with reconstructed data
+              child_spec = {
+                Engine,
+                [resume_from: engine_data]
+              }
+
+              DynamicSupervisor.start_child(__MODULE__, child_spec)
+            else
+              {:error, :not_resumable}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  @doc """
+  Gets the PID for a running execution by its execution_id.
+
+  ## Parameters
+
+  - `execution_id` - The unique execution ID to look up
+
+  ## Returns
+
+  - `{:ok, pid}` - The execution engine PID
+  - `{:error, :not_found}` - No execution is running with this ID
+
+  ## Examples
+
+      {:ok, pid} = Supervisor.get_execution_pid("exec-abc-123")
+      {:error, :not_found} = Supervisor.get_execution_pid("unknown")
+  """
+  @spec get_execution_pid(String.t()) :: {:ok, pid()} | {:error, :not_found}
+  def get_execution_pid(execution_id) when is_binary(execution_id) do
+    Cerebelum.Execution.Registry.lookup_execution(execution_id)
+  end
+
+  @doc """
   Terminates a specific execution.
 
   ## Parameters
@@ -114,5 +210,32 @@ defmodule Cerebelum.Execution.Supervisor do
   @impl true
   def init(_init_arg) do
     DynamicSupervisor.init(strategy: :one_for_one)
+  end
+
+  ## Private Helpers
+
+  # Checks if an execution state is resumable
+  defp resumable?(engine_data) do
+    cond do
+      # Don't resume if already completed successfully
+      engine_data.error == nil && Engine.Data.finished?(engine_data) ->
+        false
+
+      # Don't resume if permanently failed (non-transient errors)
+      engine_data.error != nil && permanent_failure?(engine_data.error) ->
+        false
+
+      # All other states are resumable
+      true ->
+        true
+    end
+  end
+
+  # Determines if an error is a permanent failure (not worth retrying)
+  defp permanent_failure?(_error_info) do
+    # For now, consider all failures as potentially resumable
+    # In the future, we could check error.kind for specific permanent errors
+    # like :validation_error, :authorization_error, etc.
+    false
   end
 end
