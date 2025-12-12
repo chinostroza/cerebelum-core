@@ -12,8 +12,8 @@ from enum import Enum
 
 # Import generated protobuf classes
 try:
-    from . import worker_service_pb2 as pb
-    from . import worker_service_pb2_grpc as pb_grpc
+    from .proto import worker_service_pb2 as pb
+    from .proto import worker_service_pb2_grpc as pb_grpc
 except ImportError:
     # Fallback for when protobufs aren't generated yet
     pb = None
